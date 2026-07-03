@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+
+# macOS
+.DS_Store
+
+# 金鑰與秘密 — 絕不提交
+secrets/
+*service-account*.json
+*-key.json
+.env
+.env.*
+
+# IDE / 編輯器
+.vscode/
+.idea/
+
+# 執行期產物
+*.log
+sessions/
+exports/
