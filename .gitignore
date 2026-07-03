@@ -18,6 +18,9 @@ secrets/
 .env
 .env.*
 
+# 私有筆記（本機專用，含私有路徑與機器資訊）
+LOCAL_NOTES.md
+
 # IDE / 編輯器
 .vscode/
 .idea/
