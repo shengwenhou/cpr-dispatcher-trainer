@@ -17,8 +17,11 @@
 - 建立專案 wiki（繁中六頁：Home／Introduction／Maintenance／Roadmap／Plan／Tech-Debt）。因 GitHub Free 方案的 private repo 不支援 Wiki 功能，內容暫居主 repo `wiki/` 目錄（見 `wiki/README.md` 說明）；本地 `~/Projects/cpr-dispatcher-trainer.wiki/` git repo 已備妥，待 repo 公開後一個 push 遷移。
 - 準備公開（make public）：加入 MIT License（署名 Sheng-Wen Hou）+ README 授權區塊與醫療教學免責聲明；依使用者決定移除兩份 In-House 第三方內部文件（Dispatch Protocols、QI Form；正本保留於私有文件區）並重寫 git 歷史徹底清除；全 repo 淡化機器名稱、內網 IP、私有路徑。歷史已 squash 為單一乾淨 commit 並 force push。
 
+### 補記（repo 公開後）
+- 使用者將 repo 轉為 public → 正式 GitHub Wiki 上線（六頁 + 側邊欄），主 repo `wiki/` 暫居目錄移除；wiki 編輯正本自此為 `~/Projects/cpr-dispatcher-trainer.wiki/`（push 至 `.wiki.git`）。
+- 多語言需求評估完成（日／泰／印尼／馬來／英，目標 v3.0）：評估表入 wiki Roadmap；i18n 設計紀律入 SPEC 第八之一節（v1.0 起字串外部化、locale 參數化）。
+
 ### 待辦（下次 session 從這裡接手）
-0. 使用者決定 wiki 解鎖方式（GitHub Pro／轉 public／維持現狀暫居主 repo）——不阻塞開發。
 1. **Spike：SpeechTranscriber(zh_TW) 實測**（壓胸數數階段為重點）——SPEC 第九節第 1 項。
 3. 台詞庫草稿（成人情境全套 + 元台詞 + FAQ 初稿）→ 交使用者審定。
 4. FSM 引擎骨架 + Provider 介面。
