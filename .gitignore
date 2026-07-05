@@ -29,3 +29,18 @@ LOCAL_NOTES.md
 *.log
 sessions/
 exports/
+
+# spike 編譯產物（Swift 直編 binary，不入 repo）
+spike/stt_spike
+spike/*.dSYM/
+*.o
+*.swiftmodule
+
+# spike 實測輸出（事件 JSONL，屬執行期產物，不入 repo）
+spike/*.jsonl
+
+# spike 實測音訊（--dump-audio 產物、失敗現場錄音等；可能含真人語音，
+# 本 repo 為 PUBLIC，一律不入 repo）
+spike/*.wav
+spike/*.aiff
+spike/*.caf
