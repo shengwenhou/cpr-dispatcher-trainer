@@ -145,7 +145,7 @@ states:
       - id: s6_encourage_v10
         text: "快撐不住的話跟我說，但手先不要離開，撐著再壓幾下。"
       - id: s6_encourage_v11
-        text: "節奏抓穩，一下接一下，不要忽快忽慢。"
+        text: "保持相同速度往下壓，不要忽快忽慢。"
       - id: s6_encourage_v12
         text: "做得很好，救護車正在趕過來，你先撐著。"
   s7:

@@ -44,3 +44,7 @@ spike/*.jsonl
 spike/*.wav
 spike/*.aiff
 spike/*.caf
+
+# TTS 合成中繼產物：Gemini 原始 24kHz raw wav，僅供本機重跑語速用，
+# final wav（assets/audio/<locale>/*.wav）才入 repo
+assets/audio/*/raw/

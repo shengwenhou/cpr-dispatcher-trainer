@@ -60,8 +60,22 @@
 
 - 台詞庫草稿完成：`content/zh-TW/adult_script_draft.md`（88 句：canonical 18／variant 36／元台詞 16／FAQ 18），**待維護者逐句審定**——審定通過前不得合成語音。
 
+## 2026-07-06 — 台詞庫定稿 ＋ TTS 全量入庫 ✅
+
+### 已完成
+
+1. **台詞審定完成**：維護者逐句審定 88 句 → 定稿 85 句（通過 79、修改 7、刪除 3）。關鍵臨床決策：S5 擺位不指示移動病人（四步：跪—掌根—交疊—打直）、趴臥情境退出台詞庫交現場講師、數數口令統一「一下兩下」型（與 spike 的 STT 偵測規則對齊）。
+2. **定稿正本**：`content/zh-TW/adult_script.yaml`（機器可讀，id＝音檔檔名；FSM 與 TTS 以此為準）；審定表保留為審定紀錄。
+3. **TTS 批次合成 85/85**：`tools/tts_batch.py`（Gemini TTS via Vertex AI、Charon、台灣腔派遣員 style prompt、斷點續跑、`--only` 單句補跑、locale 參數化）；音檔入庫 `assets/audio/zh-TW/`（24kHz mono）。金鑰走 `GOOGLE_APPLICATION_CREDENTIALS` 環境變數，位置見維護者私人筆記。
+4. 維護者已試聽抽樣（開場／瀕死喘息判定／數數引導／肋骨安撫）與 v11 定稿句。
+
+### 本階段坑（後續合成必讀）
+
+- **雲端內容過濾器會誤擋急救台詞**：`s6_encourage_v11` 原句與派遣員 style prompt 組合被 Vertex AI 判 PROHIBITED_CONTENT（穩定復現，重試無效）。特徵：`resp.candidates` 為 None、失敗於 1–2 秒內（非配額／網路）。解法：同義改寫後對過濾器實測 2 次以上再入庫（本次定稿「保持相同速度往下壓，不要忽快忽慢。」2/2 過）。新增台詞時建議先跑 `--only` 單句驗證。
+- Gemini TTS 生成有隨機性：個別句子聽感異常時刪 raw 重跑即可（斷點續跑會補）。
+
 ### 待辦（下次 session 從這裡接手）
 
-1. 台詞庫審定（維護者進行中）→ 審定後轉 YAML＋Gemini TTS 批次合成。
-2. FSM 引擎骨架 + 三 Provider 介面（STT 模組直接移植 spike 的管線結構與六項工程發現）。
-3. 課堂模式 UI 與資料模型。
+1. FSM 引擎骨架 + 三 Provider 介面（STT 模組直接移植 spike 的管線結構與六項工程發現；台詞庫吃 `adult_script.yaml`；音檔播放按 id 取 `assets/audio/<locale>/<id>.wav`）。
+2. 課堂模式 UI 與資料模型（Class → StudentSession → Events）。
+3. 報告輸出（Word／Excel／dashboard）。
