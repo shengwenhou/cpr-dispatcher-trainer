@@ -5,12 +5,20 @@ from server.engine.actions import SpeakAction, SpeakKind
 from server.engine.intents import IntentResult, Slot, SlotValue
 
 
-def intent(*slots, confidence: float = 0.9, faq_id=None, end_signal=False, counting=False) -> IntentResult:
+def intent(*slots, confidence: float = 0.9, faq_id=None, end_signal=False, counting=False, step_done=False) -> IntentResult:
     """以 (Slot, SlotValue) 對建構 IntentResult。"""
-    res = IntentResult(source="test", confidence=confidence, faq_id=faq_id, end_signal=end_signal, counting=counting)
+    res = IntentResult(
+        source="test", confidence=confidence, faq_id=faq_id,
+        end_signal=end_signal, counting=counting, step_done=step_done,
+    )
     for s, v in slots:
         res.slots[s] = v
     return res
+
+
+def step_done_intent(confidence: float = 0.9) -> IntentResult:
+    """建構「請求下一步」（step_done）的意圖結果。"""
+    return IntentResult(source="test", confidence=confidence, step_done=True)
 
 
 def ids(actions: list[SpeakAction]) -> list[str]:

@@ -32,20 +32,31 @@ from .intents import (
     CONFIRM_IDS,
     ENTRY_QUESTION_IDS,
     GATING_SLOT,
+    STATE_CONTEXT_FOR_GEN,
     STATE_ORDER,
     IntentResult,
     Slot,
     SlotValue,
     State,
     conditional_ids,
+    layer4_text_violates,
     slot_satisfies,
 )
 from .metrics import EventType, MetricsRecorder
 from .script_store import ScriptStore
 
-# 型別：層 4 生成器。給定 (學員原句, 當前狀態問句全文) 回傳 ≤max_chars 的安撫承接句；
-# 不可用／失敗回傳 None（引擎據此降級為層 2）。由 driver 注入（可為真 LLM 或測試假物）。
-Layer4Generator = Callable[[str, str], Optional[str]]
+# 型別：層 4 生成器。給定 (學員原句, 當前狀態問句全文, 狀態語境說明) 回傳 ≤max_chars 的
+# 安撫承接句；不可用／失敗回傳 None（引擎據此降級為層 2）。由 driver 注入（真 LLM 或測試假物）。
+# 第三參數為狀態語境（哪些動作尚未開始），讓生成器避免超前流程指示（SPEC 層 4 約束）。
+Layer4Generator = Callable[[str, str, str], Optional[str]]
+
+# S5 擺位逐步引導的四步 canonical id（依序，一次播一步）。variant 於重播當前步時輪替。
+S5_STEP_IDS: list[str] = [
+    "s5_position_kneel_c",
+    "s5_position_handbase_c",
+    "s5_position_stack_c",
+    "s5_position_arms_c",
+]
 
 
 @dataclass
@@ -53,6 +64,7 @@ class EngineConfig:
     """引擎行為參數（由 config.Config 對應欄位轉入，集中預設便於測試覆寫）。"""
 
     confidence_threshold: float = 0.55
+    s5_autoadvance_s: float = 4.0  # S5 每步沉默逾此秒數自動播下一步
     s6_insert_min_s: float = 15.0
     s6_insert_max_s: float = 20.0
     timeout_l1_s: float = 5.0
@@ -101,6 +113,11 @@ class DialogueEngine:
         self._next_insert_s: Optional[float] = None
         self._compression_started: bool = False
 
+        # S5 逐步引導：目前播到第幾個 sub-step（-1＝尚未進 S5；0..3＝已播該步；4＝四步全完成）
+        # 以及沉默 auto-advance 的下次觸發時間。
+        self._s5_step: int = -1
+        self._s5_next_auto_s: Optional[float] = None
+
         # 記錄每個狀態的進入時間，供 STATE_EXIT 算停留秒數
         self._state_enter_s: float = 0.0
         self._entered_once: bool = False  # 首次 enter 不記 STATE_EXIT（無前一狀態可離開）
@@ -137,6 +154,10 @@ class DialogueEngine:
 
         self.metrics.record(EventType.UTTERANCE_IN, trigger_text=text, state=self.state.value)
         self._reset_activity(now)
+        # S5 逐步引導中，學員一有互動（含 FAQ／澄清）就重置沉默 auto-advance 計時器，
+        # 給學員一個完整的思考/操作窗口，不會剛答完 FAQ 就被計時器搶著往前推。
+        if self.state == State.S5 and self._s5_next_auto_s is not None:
+            self._s5_next_auto_s = now + self.cfg.s5_autoadvance_s
 
         # 引擎層再保險：S6 數數／結束訊號一律先過 fastpath（延遲關鍵路徑不依賴外部是否已跑）
         fp = self._fastpath.classify(text, self.state)
@@ -182,6 +203,12 @@ class DialogueEngine:
             self._unknown_streak = 0
             return []  # 壓胸中，不打斷；插播由 tick 計時器負責
 
+        # 「請求下一步」（再來呢／然後呢／接下來／完成了）：學員完成當前步驟、要指示。
+        # 語意隨狀態不同（見 _handle_step_done），絕不走層 4。
+        if result.step_done:
+            self._unknown_streak = 0
+            return self._handle_step_done(text, now)
+
         # 其餘：unknown／信心不足 → 層 4 或層 2
         return self._handle_unknown(text, now)
 
@@ -192,13 +219,22 @@ class DialogueEngine:
             return []
         actions: list[SpeakAction] = []
 
+        # S5 沉默 auto-advance：每步逾時未回應 → 視為學員正在做動作、自動播下一步。
+        # 可能連鎖（若多個週期一次補上）或直接走完四步進 S6，故用 while。
+        while (
+            self.state == State.S5
+            and self._s5_next_auto_s is not None
+            and now >= self._s5_next_auto_s
+        ):
+            actions.extend(self._s5_advance(now, trigger=None, reason="auto"))
+            # 進 S6 後 _s5_next_auto_s 會被清成 None，迴圈自然結束
+
         # S6 插播計時器
         if self.state == State.S6 and self._next_insert_s is not None and now >= self._next_insert_s:
             actions.extend(self._fire_insert(now))
             self._schedule_next_insert(now)
 
-        # 沉默分級 timeout（S6 壓胸中不套用沉默 timeout：學員在數數＝在活動，
-        # 但若真的完全沒聲音仍會觸發；這裡以 last_activity 為準，S6 有數數會持續 reset）
+        # 沉默分級 timeout（S5 用 auto-advance、S6 用插播，皆不套用；見 _check_timeout）
         actions.extend(self._check_timeout(now))
         return actions
 
@@ -297,14 +333,27 @@ class DialogueEngine:
             self.metrics.record(
                 EventType.SLOT_FILL, trigger_text=trigger, slot=slot.value, value=val.value
             )
+        # 已開始壓胸（含 S5 途中就數數起壓）→ 打起壓時間戳（idempotent，只記一次）。
+        if usable.get(Slot.COMPRESSIONS_STARTED) == SlotValue.YES:
+            self._mark_compression_start(trigger)
+
         # 蘊含關係：已開始壓胸 → 必然已就位（沒擺好位無法壓）。補填 POSITIONING_DONE，
         # 讓「他沒反應沒呼吸我在壓了」能一路跳到 S6，不被 S5 gating 卡住。
-        if usable.get(Slot.COMPRESSIONS_STARTED) == SlotValue.YES and Slot.POSITIONING_DONE not in self.filled:
+        if usable.get(Slot.COMPRESSIONS_STARTED) == SlotValue.YES and not self._slot_ok(Slot.POSITIONING_DONE):
             self.filled[Slot.POSITIONING_DONE] = SlotValue.YES
             self.metrics.record(
                 EventType.SLOT_FILL, trigger_text=trigger, slot=Slot.POSITIONING_DONE.value,
                 value=SlotValue.YES.value, implied=True,
             )
+
+        # S5 逐步引導中收到「全局完成句」（都擺好了）→ 跳過剩餘步驟，直接完成並 chain 進 S6。
+        if (
+            self.state == State.S5
+            and 0 <= self._s5_step < len(S5_STEP_IDS)
+            and self._slot_ok(Slot.POSITIONING_DONE)
+        ):
+            return self._s5_complete(now, trigger, reason="skipped")
+
         return self._advance_from_current(now, trigger)
 
     def _handle_fire_redirect(self, trigger: str, now: float) -> list[SpeakAction]:
@@ -316,6 +365,32 @@ class DialogueEngine:
         if line is None:
             return []
         return [self._prerecorded(line.id, layer=0)]
+
+    def _handle_step_done(self, trigger: str, now: float) -> list[SpeakAction]:
+        """「請求下一步」的狀態相依處理（課堂高頻：再來呢／然後呢／完成了）。
+
+        - S5：等同回報擺位完成 → 填 POSITIONING_DONE 推進 S6（S5 四步一次全播，故完成擺位
+          即可進壓胸）。
+        - S6：等同「壓胸持續中」→ 回一條 encourage insert（不觸發層 4），並重排下次插播。
+        - S1–S4：學員在問流程，答案就是當前問題 → 重播當前狀態問句（bridge＋問句）。
+        - S0：尚在開場，無問句可重播 → 不回應（等實質輸入）。
+        """
+        self.metrics.record(EventType.DEFENSE, trigger_text=trigger, layer=0, kind="step_done", state=self.state.value)
+
+        if self.state == State.S5:
+            # 逐步引導：口頭確認 → 播下一步（不是一次填完 POSITIONING_DONE）
+            return self._s5_advance(now, trigger, reason="confirmed")
+
+        if self.state == State.S6:
+            # 壓胸持續中：回鼓勵插播、重排計時器（避免緊接著又插播）
+            actions = self._fire_insert(now)
+            self._schedule_next_insert(now)
+            return actions
+
+        if self.state in (State.S1, State.S2, State.S3, State.S4):
+            return self._reask_current(layer=0)
+
+        return []  # S0／S7：無對應行為
 
     def _go_s7(self, trigger: str, now: float) -> list[SpeakAction]:
         """轉 S7：記 EMS_ARRIVED → 播 handover → 記 SESSION_END → finished。"""
@@ -354,13 +429,24 @@ class DialogueEngine:
             and text.strip()
         ):
             question = self._current_question_text()
+            state_context = STATE_CONTEXT_FOR_GEN.get(self.state, "")
             gen = None
             try:
-                gen = self._layer4(text, question)
+                gen = self._layer4(text, question, state_context)
             except Exception:
                 gen = None
             if gen:
                 gen = gen.strip()[: self.cfg.layer4_max_chars]
+                # 驗證層：生成含「當前狀態不該提及的流程動作」（如 S5 說「壓胸」）→ 丟棄降級層 2。
+                violation = layer4_text_violates(gen, self.state)
+                if violation is not None:
+                    self.metrics.record(
+                        EventType.DEFENSE, trigger_text=text, layer=4,
+                        rejected=True, reason="procedure_leak", keyword=violation, generated=gen,
+                    )
+                    # 保守：降級層 2（bridge 前綴＋重播問句）
+                    return self._handle_layer2(text)
+
                 self.metrics.record(
                     EventType.DEFENSE, trigger_text=text, layer=4, generated=gen
                 )
@@ -404,7 +490,8 @@ class DialogueEngine:
 
         S6 例外：壓胸階段非嚴格輪流，互動由插播計時器負責；學員沉默＝專心壓胸，
         不該用「喂？你還在嗎？」打斷。故 S6（與終態 S7、開場 S0）不套用沉默 timeout。"""
-        if self.state in (State.S0, State.S6, State.S7):
+        # S5 例外：擺位改用沉默 auto-advance（持續往前帶），不問「你還在嗎」；S0/S6/S7 亦不套用。
+        if self.state in (State.S0, State.S5, State.S6, State.S7):
             return []
         silence = now - self._last_activity_s
         actions: list[SpeakAction] = []
@@ -442,6 +529,62 @@ class DialogueEngine:
         self.metrics.record(EventType.SYSTEM_SPEAK, line_id=line.id, layer=0, s6_insert=True)
         return [SpeakAction(kind=SpeakKind.PRERECORDED, line_id=line.id, layer=0)]
 
+    # ================= 內部：S5 逐步引導 =================
+    def _s5_begin(self, layer: int) -> list[SpeakAction]:
+        """進入 S5：播第一步（kneel），啟動 auto-advance 計時器。"""
+        self._s5_step = 0
+        self._s5_next_auto_s = self._state_enter_s + self.cfg.s5_autoadvance_s
+        step_id = S5_STEP_IDS[0]
+        self.metrics.record(
+            EventType.S5_SUBSTEP, step=step_id, index=0, advance="enter"
+        )
+        return [self._prerecorded(step_id, layer=layer)]
+
+    def _s5_advance(self, now: float, trigger: Optional[str], reason: str) -> list[SpeakAction]:
+        """S5 往下一步推進。reason: confirmed（口頭確認）／auto（沉默自動）。
+
+        若已在最後一步（arms）→ 四步完成，填 POSITIONING_DONE 並 chain 進 S6。
+        否則播下一步 canonical（重播/續播用當前步變體輪替），重排 auto-advance 計時器。
+        """
+        if self._s5_step >= len(S5_STEP_IDS) - 1:
+            # 最後一步已播 → 擺位完成，進 S6
+            return self._s5_complete(now, trigger, reason="confirmed" if reason == "confirmed" else "auto")
+
+        self._s5_step += 1
+        # 重排下次 auto-advance：口頭確認從 now 起算；沉默自動從「上次到期時刻」起算，
+        # 讓單次大幅 tick（如 /wait 20）也能連鎖補上多步。
+        if reason == "auto" and self._s5_next_auto_s is not None:
+            self._s5_next_auto_s = self._s5_next_auto_s + self.cfg.s5_autoadvance_s
+        else:
+            self._s5_next_auto_s = now + self.cfg.s5_autoadvance_s
+        step_id = S5_STEP_IDS[self._s5_step]
+        self.metrics.record(
+            EventType.S5_SUBSTEP, trigger_text=trigger, step=step_id, index=self._s5_step, advance=reason
+        )
+        return [self._prerecorded(step_id, layer=1 if trigger else 0)]
+
+    def _s5_complete(self, now: float, trigger: Optional[str], reason: str) -> list[SpeakAction]:
+        """S5 四步完成（或全局完成句跳步）：填 POSITIONING_DONE、關計時器、chain 進 S6。
+
+        reason: confirmed／auto（走完四步）／skipped（全局完成句跳過剩餘步）。
+        """
+        self._s5_next_auto_s = None
+        self._s5_step = len(S5_STEP_IDS)
+        self.metrics.record(
+            EventType.S5_SUBSTEP, trigger_text=trigger, step="__complete__", advance=reason
+        )
+        self.filled[Slot.POSITIONING_DONE] = SlotValue.YES
+        self.metrics.record(
+            EventType.SLOT_FILL, trigger_text=trigger, slot=Slot.POSITIONING_DONE.value,
+            value=SlotValue.YES.value, via=reason,
+        )
+        return self._advance_from_current(now, trigger)
+
+    def _s5_current_step_id(self) -> str:
+        """S5 當前 sub-step 的 canonical id（重播錨定用）。"""
+        idx = self._s5_step if 0 <= self._s5_step < len(S5_STEP_IDS) else 0
+        return S5_STEP_IDS[idx]
+
     # ================= 內部：台詞取用與播放 =================
     def _speak_state_canonicals(self, state: State, layer: int) -> list[SpeakAction]:
         """播某狀態的 canonical（依序），依四種角色決定是否播：
@@ -450,8 +593,13 @@ class DialogueEngine:
         - 確認句（CONFIRM_IDS）：slot 已滿足時播（拿到答案的回應）；未滿足時抑制。
         - 條件句（CONDITIONAL_LINES）：不在此正常迭代播出（由 _conditional_actions 依 slot 值選），
           此處一律略過，最後再統一附加。
-        - 其餘（always-voice）：一律播（S1 確認、S5/S6 指令、S7 交接）。
+        - 其餘（always-voice）：一律播（S1 確認、S6 指令、S7 交接）。
+        S5 特例：不一次連播四步，改進入逐步引導模式——只播第一步並啟動 auto-advance 計時器。
         """
+        # S5：逐步引導。進入時只播第一步（kneel），其餘由確認／沉默 auto-advance／全局完成推進。
+        if state == State.S5 and not self._slot_ok(Slot.POSITIONING_DONE):
+            return self._s5_begin(layer)
+
         slot = GATING_SLOT.get(state)
         slot_ok = slot is not None and self._slot_ok(slot)
         entry_qs = ENTRY_QUESTION_IDS.get(state, set())
@@ -504,7 +652,12 @@ class DialogueEngine:
         return actions
 
     def _current_question_id(self) -> Optional[str]:
-        """當前狀態「主問句」的 canonical id（用於 bridge 重問）。取該狀態第一個非分支 canonical。"""
+        """當前狀態「主問句」的 canonical id（用於 bridge 重問）。
+
+        S5 例外：擺位為逐步引導，重問要錨定「當前 sub-step」句（不回第一步 kneel）。
+        其他狀態取該狀態第一個非分支 canonical。"""
+        if self.state == State.S5 and 0 <= self._s5_step < len(S5_STEP_IDS):
+            return self._s5_current_step_id()
         for line in self.script.canonical(self.state.value):
             if not line.branch:
                 return line.id

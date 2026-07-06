@@ -78,9 +78,9 @@ def test_layer4_generation_with_filler(make_engine, metrics):
     """層 4：注入生成器 → unknown 有實質內容時，先 filler 再播生成短句，之後回當前問句。"""
     calls = []
 
-    def fake_gen(utterance, question):
-        calls.append((utterance, question))
-        return "我懂你的擔心，我們先專心壓胸。"
+    def fake_gen(utterance, question, state_context=""):
+        calls.append((utterance, question, state_context))
+        return "我懂你的擔心，我會一直在線上陪你。"  # 安撫、不含超前動作詞
 
     eng = make_engine(layer4_generator=fake_gen)
     eng.start()
@@ -99,7 +99,7 @@ def test_layer4_generation_with_filler(make_engine, metrics):
 
 def test_layer4_falls_back_to_layer2_when_generation_fails(make_engine, metrics):
     """層 4 生成失敗（回 None）→ 降級為層 2 clarify。"""
-    def failing_gen(utterance, question):
+    def failing_gen(utterance, question, state_context=""):
         return None
 
     eng = make_engine(layer4_generator=failing_gen)
@@ -116,7 +116,7 @@ def test_layer4_not_triggered_on_silence(make_engine, metrics):
     """空句（沉默）不走層 4（層 4 針對有實質內容的 unknown）。"""
     calls = []
 
-    def gen(u, q):
+    def gen(u, q, state_context=""):
         calls.append(u)
         return "x"
 

@@ -58,6 +58,39 @@ def detect_arrival(text: str) -> bool:
     return bool(_ARRIVAL_RE.search(text))
 
 
+# 「當前這一步完成、請求下一步」語型（課堂高頻超短句，直接走 fastpath 不勞 LLM）：
+# 再來呢／然後呢／接下來／下一步／好了／跪好了／做好了／完成了／弄好了…
+# 注意：這是「單一步驟」確認（S5 逐步引導播下一步），不是「全部擺好」（那走 _ALL_POSITIONED）。
+_STEP_DONE_PHRASES = [
+    "再來呢", "再來要", "再來咧", "再來是", "然後呢", "然後咧", "然後要", "然後是",
+    "接下來", "下一步", "下一個步驟", "做好了", "做完了", "完成了", "弄好了", "好了然後",
+    "然後勒", "再來勒", "接著呢", "接著要", "好了", "好啦", "跪好了", "跪好", "OK", "ok", "可以了",
+]
+
+# 「全部擺好、可以開始」的明確全局完成語型（→ POSITIONING_DONE，S5 跳過剩餘步驟直接進 S6）。
+# 需比 step_done 更明確（含「都／全部／位置／手也」等整體語氣），且優先於 step_done 判定。
+_ALL_POSITIONED_PHRASES = [
+    "都擺好", "都弄好", "都準備好", "都好了", "全部好", "全部弄好", "全部擺好", "都就位",
+    "位置都", "手也擺好", "手也放好", "位置擺好", "姿勢擺好", "都用力壓好",
+]
+
+
+def detect_all_positioned(text: str) -> bool:
+    """偵測「全部擺好、可以開始壓」的明確全局完成訊號（→ 跳過剩餘 S5 步驟）。"""
+    if not text:
+        return False
+    return any(p in text for p in _ALL_POSITIONED_PHRASES)
+
+
+def detect_step_done(text: str) -> bool:
+    """偵測「當前這一步完成、請求下一步」。用寬鬆片語比對，容短句與諧音。
+
+    呼叫端若同時要判全局完成，應先判 detect_all_positioned（較明確，優先）。"""
+    if not text:
+        return False
+    return any(p in text for p in _STEP_DONE_PHRASES)
+
+
 class RegexFastPath:
     """S6 數數與結束訊號的即時偵測器。無狀態，純函式包裝。"""
 
@@ -71,13 +104,28 @@ class RegexFastPath:
             res.confidence = 0.9
             return res
 
-        # 數數偵測只在 S6 有意義（起壓判定＋壓胸中不打斷）。S6 外即使句子含數字（年齡、
-        # 樓層、門牌、分鐘數）也不報 counting——一來 S6 外 counting 對 FSM 是惰性的（不填
-        # slot、不打戳），二來「五十歲」這類會被寬鬆規則誤判，乾脆在 S6 外一律不報，最乾淨。
-        if state == State.S6 and detect_counting(text, strict=False):
+        # 數數偵測在 S5／S6 有意義。學員在 S5 擺位途中就開始數數＝已就位且已起壓 →
+        # 填 COMPRESSIONS_STARTED（引擎蘊含補 POSITIONING_DONE），直接完成擺位跳進 S6 並打
+        # 起壓時間戳，不會卡在 S5 把數數當 unknown。S6 內數數＝壓胸進行中。
+        # （S5／S6 之外不報 counting：年齡/門牌/分鐘數等含數字句對 FSM 惰性，且寬鬆規則會誤判。）
+        if state in (State.S5, State.S6) and detect_counting(text, strict=False):
             res.counting = True
             res.confidence = 0.85
-            res.slots[Slot.COMPRESSIONS_STARTED] = SlotValue.YES  # S6 內數數＝已開始壓胸
+            res.slots[Slot.COMPRESSIONS_STARTED] = SlotValue.YES
+            return res
+
+        # S5「全部擺好」明確全局完成（都擺好了／手也放好了）→ 填 POSITIONING_DONE，
+        # 引擎據此跳過剩餘 S5 步驟直接進 S6。優先於 step_done（較明確）。
+        if state == State.S5 and detect_all_positioned(text):
+            res.slots[Slot.POSITIONING_DONE] = SlotValue.YES
+            res.confidence = 0.85
+            return res
+
+        # 「當前這一步完成、請求下一步」（好了／再來呢／然後呢…）：課堂高頻超短句，
+        # 直接走 fastpath 省 LLM 往返（S5 auto-advance 只有數秒，LLM 往返太慢）。
+        if detect_step_done(text):
+            res.step_done = True
+            res.confidence = 0.85
             return res
 
         return res  # 空結果（is_unknown=True），讓上層續問 LLM
@@ -103,7 +151,9 @@ class KeywordFallbackClassifier:
     # 呼吸描述模糊、無法判定 → 追問（probe）。含不確定詞或「有呼吸」但沒說正常
     _UNCLEAR_BREATH = ["不確定", "不太確定", "不知道", "看不出來", "好像有呼吸", "應該有呼吸", "有一點", "微弱"]
     _NORMAL_BREATH = ["正常呼吸", "呼吸正常", "很正常", "正常的"]
-    _POSITION_DONE = ["跪好", "就位", "手放好", "準備好", "好了", "擺好", "趴好", "弄好", "ok", "OK"]
+    # 注意：S5 改逐步引導後，「好了／跪好了」屬單步確認（step_done），不再一次填 POSITIONING_DONE。
+    # 全局完成改由 detect_all_positioned 判斷（都擺好了／手也放好了…）。此清單保留給非 S5 情境
+    # （目前無用，POSITIONING_DONE 於 S5 由 step_done 逐步累積或全局完成句填）。
 
     def classify(self, text: str, state: State) -> IntentResult:
         res = IntentResult(source="keyword_fallback", raw=text)
@@ -141,10 +191,15 @@ class KeywordFallbackClassifier:
         elif has(self._UNCLEAR_BREATH):
             res.slots[Slot.BREATHING] = SlotValue.UNCLEAR
 
-        # S5：擺位完成
-        if state == State.S5 and has(self._POSITION_DONE):
+        # S5：全局完成句（都擺好了／手也放好了）→ POSITIONING_DONE（跳過剩餘步驟）。優先於 step_done。
+        if state == State.S5 and detect_all_positioned(text):
             res.slots[Slot.POSITIONING_DONE] = SlotValue.YES
 
-        if res.slots:
+        # 「請求下一步」（好了／再來呢／完成了…）：沒有更強的 slot 訊號時標記 step_done，
+        # 讓降級路徑也能正確處理（S1–S4 重問、S5 播下一步、S6 鼓勵）。
+        if not res.slots and detect_step_done(text):
+            res.step_done = True
+
+        if res.slots or res.step_done:
             res.confidence = 0.6
         return res

@@ -118,6 +118,15 @@ class TimeoutConfig:
 
 
 @dataclass
+class S5Config:
+    """S5 擺位逐步引導設定。"""
+
+    # 沉默 auto-advance：每步播完逾此秒數未收到回應 → 視為學員正在做動作、自動播下一步。
+    # 這取代 S5 的沉默 timeout reprompt（S5 不問「你還在嗎」，改為持續往前帶）。
+    autoadvance_s: float = field(default_factory=lambda: float(_env("CPR_S5_AUTOADVANCE_S", "4")))
+
+
+@dataclass
 class S6Config:
     """S6 壓胸階段設定。"""
 
@@ -138,6 +147,7 @@ class Config:
     tts: TTSConfig = field(default_factory=TTSConfig)
     layer4: Layer4Config = field(default_factory=Layer4Config)
     timeout: TimeoutConfig = field(default_factory=TimeoutConfig)
+    s5: S5Config = field(default_factory=S5Config)
     s6: S6Config = field(default_factory=S6Config)
 
     @property

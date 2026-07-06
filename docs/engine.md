@@ -99,7 +99,51 @@
 
 此外有一條蘊含規則：若一句話直接填了 `COMPRESSIONS_STARTED=YES`（如「他沒反應沒呼吸我在壓了」），引擎會自動補填 `POSITIONING_DONE=YES`（`_advance_with_slots` 中的隱含邏輯），因為「已開始壓胸」在臨床上蘊含「已就位」，讓這種一句話跳到底的表述不會被 S5 的 gating 卡住。
 
-### 3.3 Canonical 四種角色（含條件選句）
+### 3.3 意圖 STEP_DONE（請求下一步）
+
+`IntentResult`（`intents.py`）新增一個獨立欄位 `step_done: bool`——不是 slot，而是代表「當前步驟已完成、請求下一步指示」的獨立訊號，對應課堂高頻超短句：「再來呢」「然後呢」「接下來」「下一步」「好了」「完成了」等。三個分類器同步支援此欄位：
+
+- **`RegexFastPath.detect_step_done`**（`fastpath.py`）：以 `_STEP_DONE_PHRASES` 片語清單直接短路判定，命中即回傳 `step_done=True`、`confidence=0.85`，不必等 LLM 往返（S5 沉默 auto-advance 的間隔僅數秒級，LLM 往返延遲會拖慢節奏）。
+- **`KeywordFallbackClassifier`**（`fastpath.py`）：降級路徑下，僅在本句沒有更強的 slot 訊號時才標記 `step_done`，避免蓋過更明確的分類結果。
+- **`GeminiIntentClassifier`**（`llm_gemini.py`）：constrained JSON schema 新增 `step_done: BOOLEAN` 欄位，系統 prompt 明確定義其語意與例句。
+
+**優先序**：在 S5 狀態下，`detect_all_positioned`（全局完成句，如「都擺好了」「手也放好了」）優先於 `detect_step_done` 判定——兩者字面可能重疊時，以語意更明確的全局完成句為準（見 3.4）。
+
+**狀態相依語意**（`fsm.py` 的 `_handle_step_done`）：
+
+| 當前狀態 | 行為 |
+|---|---|
+| S5 | 播下一個 sub-step（見 3.4） |
+| S6 | 視為「壓胸持續中」：回一條鼓勵插播，並重排下次插播計時器 |
+| S1–S4 | 學員在問流程、答案就是當前問題：重播當前狀態問句（bridge 前綴＋當前問句） |
+| S0／S7 | 無對應行為（尚未開場完成或已終結，無問句可重播） |
+
+**歸類為正常流程**：`step_done` 記為 `layer=0`（`_handle_step_done` 記 `EventType.DEFENSE` 事件時帶 `layer=0`、`kind="step_done"`）——與層 1 跳步同級，只是觸發媒介不同（slot 填入 vs. 明確請求下一步），並非防禦觸發。`IntentResult.is_unknown` 也已納入此欄位：只有在沒有 slot、沒 FAQ、沒結束訊號、沒數數、且 `step_done` 為否時才判定為 unknown。
+
+### 3.4 S5 逐步引導模式
+
+S5（指導擺位）不再像其他 always-voice 狀態一次連播完整台詞，改為**逐步引導**：一次只播一個 sub-step，等口頭確認或沉默逾時才播下一步。四個 sub-step 依序定義於 `fsm.py` 的 `S5_STEP_IDS` 常數，與台詞庫（`content/zh-TW/adult_script.yaml`）canonical 的既有順序一致：
+
+1. `s5_position_kneel_c`（跪到旁邊）
+2. `s5_position_handbase_c`（掌根置於胸口正中）
+3. `s5_position_stack_c`（雙手交疊）
+4. `s5_position_arms_c`（手臂打直）
+
+進入 S5 時只播第一步並啟動 auto-advance 計時器（`_s5_begin`）。其後三種推進機制並存：
+
+- **(a) 口頭確認**：偵測到 `step_done`（見 3.3）→ 呼叫 `_s5_advance(reason="confirmed")` 播下一個 sub-step。
+- **(b) 沉默 auto-advance**：每播完一步即排程下次自動推進的時間點（`_s5_next_auto_s`），逾時仍未收到回應 → 視為學員正在做動作，`tick()` 呼叫 `_s5_advance(reason="auto")` 自動播下一步。逾時秒數為 `EngineConfig.s5_autoadvance_s`（對應 `config.py` 的 `S5Config.autoadvance_s`，環境變數 `CPR_S5_AUTOADVANCE_S`，預設 `4.0` 秒；詳見第六節）。**這取代了 S5 原本的沉默分級 timeout reprompt**——`_check_timeout` 已把 S5 加入例外清單（與 S0／S6／S7 同組），不再對 S5 播「你還在嗎」式的沉默 reprompt，改由 auto-advance 持續往前帶。
+- **(c) 全局完成句**：學員一句話講完全部就位（`detect_all_positioned`，如「都擺好了」「手也放好了」）→ 直接填 `POSITIONING_DONE=YES`；`_advance_with_slots` 偵測到「S5 逐步引導途中、此 slot 已滿足」→ 跳過剩餘步驟，呼叫 `_s5_complete(reason="skipped")` 直接完成。
+
+四個 sub-step 走完最後一步（`arms`）後再收到任何推進訊號，或走 (c) 跳步完成，都會呼叫 `_s5_complete`：填 `POSITIONING_DONE=YES`、關閉 auto-advance 計時器，並 chain 進 S6，播出 S6 的起始三句（`s6_start_c`／`s6_start_rate_c`／`s6_start_depth_c`）。
+
+**S5 途中即起壓的特例**：學員若在擺位途中就開始數數（「一下兩下」），代表已就位且已經在壓——`RegexFastPath` 在 **S5 與 S6** 皆會偵測 `counting`，命中即填 `COMPRESSIONS_STARTED=YES`；引擎既有的蘊含規則會再補填 `POSITIONING_DONE=YES`（已在壓胸即代表已就位，見 3.2），因此會直接視為擺位完成、跳進 S6，並打起壓時間戳（`COMPRESSION_START` 事件，idempotent 只記一次）。
+
+**重播錨定**：FAQ 答完（層 3）或層 2 clarify／takeover 之後的「重問當前問句」，在其他狀態一律回問句第一句；但 S5 期間 `_current_question_id` 有特判——改呼叫 `_s5_current_step_id()`，錨定「當前正在播的那個 sub-step」，不會退回第一步 kneel。若當前步有 variant（如 `s5_position_kneel_v01`），重播時會輪替（`rotate_variant`），避免每次都聽到同一句。
+
+**Metrics**：每次進入、推進、或完成 sub-step 都會記一筆新事件 `EventType.S5_SUBSTEP`，附帶 `step`（canonical id；完成時記為 `__complete__`）與 `advance`（`enter`／`confirmed`／`auto`／`skipped`），供教學回饋分析學員在哪一個 sub-step 卡最久。
+
+### 3.5 Canonical 四種角色（含條件選句）
 
 每個狀態在台詞庫中的 canonical 句依語意分成四種角色，決定「什麼情境播哪句」，定義於 `intents.py`：
 
@@ -135,7 +179,7 @@
 | 1 | 多 slot 一次填（跳步），為正常能力而非「防禦」 | 預錄 canonical | `_advance_with_slots` / `_advance_from_current` |
 | 2 | unknown 且無層 4 生成結果：首次 unknown → clarify；連續 2 次 unknown → takeover | 台詞庫 `meta_phrases`（`clarify`／`takeover`／`bridge`），輪替取用 | `_handle_layer2` |
 | 3 | 命中課堂 FAQ（`result.faq_id` 非空） | 台詞庫 `faq` 答句＋答完自動 bridge 重問當前狀態問句 | `_handle_faq` |
-| 4 | unknown 但語句非空、`layer4_enabled` 且已注入生成器：先播 filler 掩飾延遲，再播 ≤`layer4_max_chars` 字的即時生成安撫承接句；生成失敗或不可用則降級為層 2 | 台詞庫 `filler` ＋ LLM 即時生成（`Layer4Generator`） | `_handle_unknown` |
+| 4 | unknown 但語句非空、`layer4_enabled` 且已注入生成器：先播 filler 掩飾延遲，再播 ≤`layer4_max_chars` 字的即時生成安撫承接句（生成 prompt 帶入狀態語境，見補充規則）；生成失敗、不可用、或生成後驗證未通過，皆降級為層 2 | 台詞庫 `filler` ＋ LLM 即時生成（`Layer4Generator`） | `_handle_unknown`（驗證：`layer4_text_violates`） |
 | 5 | 沉默分級 timeout（5s→l1，10s→l2，各級只播一次直到有活動 reset）；技術故障（driver 主動呼叫 `tech_fault()`） | 台詞庫 `meta_phrases`（`timeout_l1`／`timeout_l2`／`tech_fault`） | `_check_timeout` / `tech_fault` |
 
 補充規則：

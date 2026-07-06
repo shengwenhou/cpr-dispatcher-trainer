@@ -90,17 +90,19 @@ class IntentResult:
     faq_id: Optional[str] = None
     end_signal: bool = False
     counting: bool = False
+    step_done: bool = False  # 「當前步驟完成、請求下一步」（再來呢／然後呢／接下來／好了／完成了）
     source: str = "none"
     raw: Optional[Any] = None
 
     @property
     def is_unknown(self) -> bool:
-        """無任何可用資訊：沒填 slot、沒 FAQ、沒結束訊號、沒數數。"""
+        """無任何可用資訊：沒填 slot、沒 FAQ、沒結束訊號、沒數數、非請求下一步。"""
         return (
             not self.slots
             and self.faq_id is None
             and not self.end_signal
             and not self.counting
+            and not self.step_done
         )
 
 
@@ -184,4 +186,57 @@ CONDITIONAL_LINES: dict[State, list[tuple[str, set["SlotValue"]]]] = {
 def conditional_ids(state: State) -> set[str]:
     """某狀態所有「條件句」的 id 集合（供 canonical 正常迭代時略過這些 id）。"""
     return {lid for lid, _ in CONDITIONAL_LINES.get(state, [])}
+
+
+# ── 層 4 生成內容的流程動作管制（SPEC 層 4：禁止新醫療指示／超前流程）──────────
+# 問題：層 4 即時生成可能吐出「超前流程」的動作指示（如 S5 擺位階段就說「繼續壓胸」，
+# 但學員還沒開始壓）。這違反「僅安撫／承接／拉回，不新增醫療指示」。
+# 機制：定義「流程動作關鍵詞 → 允許提及的狀態集合」。生成文字若含某關鍵詞，而當前狀態
+#      不在其允許集合 → 判定為超前/越界指示，丟棄生成、降級層 2（保守優先）。
+# 允許集合為空 set＝此動作在本課堂任何狀態都不該由層 4 提及（如 AED／人工呼吸／電擊，
+# 本情境 compression-only，這些僅走 FAQ 答句，絕不由層 4 生成）。
+PROCEDURE_ACTION_KEYWORDS: dict[str, set[State]] = {
+    "壓胸": {State.S6},          # 壓胸指示只在 S6 合法
+    "按壓": {State.S6},
+    "壓下去": {State.S6},
+    "往下壓": {State.S6},
+    "開始壓": {State.S6},
+    "繼續壓": {State.S6},
+    "數": {State.S6},            # 「跟著我數」屬壓胸節奏指示
+    "AED": set(),               # 本課堂不由層 4 指示 AED（僅 FAQ）
+    "電擊": set(),
+    "去顫": set(),
+    "人工呼吸": set(),           # compression-only，絕不指示
+    "口對口": set(),
+    "吹氣": set(),
+    "翻身": set(),               # 翻動病人屬 FAQ 判斷，不由層 4 生成
+    "側躺": set(),
+    "翻過來": set(),
+    "掐人中": set(),
+}
+
+
+def layer4_text_violates(text: str, state: State) -> Optional[str]:
+    """檢查層 4 生成文字是否含「當前狀態不該提及的流程動作」。
+
+    回傳觸發的關鍵詞（字串）表示違規、應丟棄降級；回傳 None 表示通過。
+    保守策略：只要命中任一越界關鍵詞即判違規。"""
+    if not text:
+        return None
+    for kw, allowed_states in PROCEDURE_ACTION_KEYWORDS.items():
+        if kw in text and state not in allowed_states:
+            return kw
+    return None
+
+
+# 層 4 生成 prompt 用的「狀態語境」：當前在做什麼、哪些關鍵動作尚未開始（給生成器足夠脈絡
+# 以避免超前指示）。字串為餵給 LLM 的開發者語料，非派遣員台詞。
+STATE_CONTEXT_FOR_GEN: dict[State, str] = {
+    State.S1: "你正在確認對方要叫救護車。學員尚未提供地址，尚未評估傷患，尚未開始壓胸。",
+    State.S2: "你正在詢問地址。尚未評估傷患意識與呼吸，尚未開始壓胸。",
+    State.S3: "你正在確認傷患有無意識。尚未確認呼吸，尚未開始壓胸。",
+    State.S4: "你正在確認傷患有無正常呼吸。尚未指導擺位，學員尚未開始壓胸。",
+    State.S5: "你正在指導擺位（跪好、手放胸口正中）。學員【尚未開始壓胸】，此刻絕不可提到壓胸或數數。",
+    State.S6: "你正在指導壓胸，學員已在壓。可安撫、鼓勵維持，但不新增其他醫療處置。",
+}
 

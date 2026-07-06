@@ -35,6 +35,7 @@ class EventType(str, Enum):
     DEFENSE = "defense"                    # 五層防禦觸發（附 layer 與細節）
     COMPRESSION_START = "compression_start"  # ★S6 首次偵測數數（起壓時間戳）
     OHCA_RECOGNIZED = "ohca_recognized"    # ★進入 S5（辨識 OHCA 時間戳）
+    S5_SUBSTEP = "s5_substep"              # S5 擺位子步驟播放（附 step 名與推進方式 confirmed/auto/skipped）
     EMS_ARRIVED = "ems_arrived"            # ★S7 觸發（EMS 抵達）
     TIMEOUT = "timeout"                    # 沉默分級 timeout 觸發
     SESSION_END = "session_end"            # 通話結束

@@ -93,8 +93,18 @@
 - 設定集中 `server/config.py`（`CPR_*` 環境變數可覆蓋）；LLM 認證共用 TTS 的 service account（GOOGLE_APPLICATION_CREDENTIALS）。
 - 依賴已入 requirements.txt（fastapi/uvicorn/pytest 等，venv 快照已更新）。
 
+### 2026-07-07 補記 — 維護者實測反饋修正（第一輪課堂改善循環）
+
+維護者文字模式試玩後反饋「S5 跪好了系統不會往下、鬼打牆重複第一步」，修正三項（pytest 99 全綠，+27）：
+
+1. **S5 改逐步引導模式**：sub-step 進度（跪→掌根→交疊→打直一次播一步）；三路推進並存——口頭確認（「好了／再來呢」）立即下一步、**沉默 4 秒自動下一步**（`CPR_S5_AUTOADVANCE_S` 可調；S5 不再問「你還在嗎」）、「都擺好了」跳步進 S6；重問／FAQ 回接錨定**當前步**；每步推進方式（confirmed/auto/skipped）記入 metrics（debriefing 可看全班哪步卡最久）。counting 偵測擴及 S5（邊擺位邊數數即起壓）。
+2. **STEP_DONE 意圖**（「再來呢／然後呢／下一步」課堂高頻句）：S5=下一步、S6=回 encourage、S1–S4=重播當前問句；超短確認詞走 fastpath 不花 LLM 往返。
+3. **層 4 雙保險**：生成 prompt 加狀態語境與禁令＋生成後驗證層（超前流程動作詞→丟棄降級層 2）——修正試玩抓到的「擺位階段生成『繼續壓胸』」超前指示。
+
+此輪即 SPEC 設計的改善循環首次運轉：課堂使用→層 4 存證→審核→意圖轉正。
+
 ### 待辦（下次 session 從這裡接手）
 
 1. 課堂模式 UI 與資料模型（Class → StudentSession → Events）；WebSocket 接 runtime driver；真語音整測（麥克風＋喇叭，需維護者在 mini 本機配合）。
 2. 報告輸出（Word／Excel／debriefing dashboard）。
-3. 積欠項：README 文件地圖補 `docs/engine.md` 連結。
+3. 積欠項：README 文件地圖補 `docs/engine.md` 連結；`docs/engine.md` 補 S5 逐步模式與 STEP_DONE 章節（fast-worker 未完成）。

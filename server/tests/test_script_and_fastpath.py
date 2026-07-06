@@ -142,3 +142,45 @@ def test_keyword_unknown_returns_empty():
     kw = KeywordFallbackClassifier()
     r = kw.classify("今天天氣真好", State.S2)
     assert r.is_unknown
+
+
+# ── STEP_DONE / 全局擺好 偵測（三分類器同步）──────────────────
+def test_detect_step_done_phrases():
+    from server.engine.fastpath import detect_step_done
+
+    for p in ["再來呢", "然後呢", "接下來", "下一步", "好了", "跪好了", "做好了", "完成了"]:
+        assert detect_step_done(p), p
+    assert not detect_step_done("他沒有反應")
+
+
+def test_detect_all_positioned_phrases():
+    from server.engine.fastpath import detect_all_positioned
+
+    for p in ["都擺好了", "手也放好了", "全部弄好了", "位置都好了", "都就位了"]:
+        assert detect_all_positioned(p), p
+    assert not detect_all_positioned("好了")  # 單步確認不算全局完成
+
+
+def test_fastpath_step_done_shortcircuit():
+    fp = RegexFastPath()
+    r = fp.classify("再來呢", State.S5)
+    assert r.step_done is True
+
+
+def test_fastpath_all_positioned_fills_slot_in_s5():
+    fp = RegexFastPath()
+    r = fp.classify("我都擺好了手也放好了", State.S5)
+    assert r.slots.get(Slot.POSITIONING_DONE) == SlotValue.YES
+    assert r.step_done is False  # 全局完成優先於 step_done
+
+
+def test_keyword_step_done():
+    kw = KeywordFallbackClassifier()
+    r = kw.classify("然後呢", State.S3)
+    assert r.step_done is True
+
+
+def test_keyword_all_positioned_in_s5():
+    kw = KeywordFallbackClassifier()
+    r = kw.classify("都擺好了", State.S5)
+    assert r.slots.get(Slot.POSITIONING_DONE) == SlotValue.YES

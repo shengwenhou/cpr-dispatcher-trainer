@@ -86,6 +86,7 @@ def build_engine(
 ) -> DialogueEngine:
     ecfg = EngineConfig(
         confidence_threshold=cfg.llm.confidence_threshold,
+        s5_autoadvance_s=cfg.s5.autoadvance_s,
         s6_insert_min_s=cfg.s6.insert_min_s,
         s6_insert_max_s=cfg.s6.insert_max_s,
         timeout_l1_s=cfg.timeout.level1_s,

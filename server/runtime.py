@@ -35,19 +35,27 @@ class IntentPipeline:
         self._keyword = KeywordFallbackClassifier()
 
     def classify(self, text: str, state: State) -> IntentResult:
-        # 1) fastpath：S6 數數／結束訊號直接短路，不勞 LLM（延遲關鍵路徑）
+        # 1) fastpath：S6 數數／結束訊號／請求下一步／S5 全部擺好 直接短路，不勞 LLM
+        #    （延遲關鍵路徑）。「再來呢／好了」等超短句必然高頻，不必花 LLM 往返。
         fp = self._fastpath.classify(text, state)
-        if fp.end_signal or (state == State.S6 and fp.counting):
+        if (
+            fp.end_signal
+            or fp.step_done
+            or (state == State.S6 and fp.counting)
+            or fp.slots  # S5 全部擺好 → 帶 POSITIONING_DONE slot
+        ):
             return fp
 
         # 2) LLM（可用時）
         if self.llm is not None and self.llm.available():
             res = self.llm.classify_intent(text, state)
-            # LLM 回了東西（有 slot／faq／結束訊號／夠信心）就用它
+            # LLM 回了東西（有 slot／faq／結束訊號／請求下一步／夠信心）就用它
             if not res.is_unknown or res.confidence > 0:
-                # 合併 fastpath 的 counting（S6 外的弱訊號也保留）
+                # 合併 fastpath 的弱訊號（S6 外 counting、step_done）
                 if fp.counting:
                     res.counting = True
+                if fp.step_done:
+                    res.step_done = True
                 return res
 
         # 3) 降級：keyword 後備
@@ -56,6 +64,8 @@ class IntentPipeline:
             kw.counting = True
         if fp.end_signal:
             kw.end_signal = True
+        if fp.step_done:
+            kw.step_done = True
         return kw
 
 
