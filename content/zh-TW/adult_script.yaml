@@ -111,7 +111,7 @@ states:
   s6:
     canonical:            # 起始指令，依序播放
       - id: s6_start_c
-        text: "現在開始壓，跟著我數，一、二、三，用力壓、不要停。"
+        text: "現在開始壓，跟著我數，一下、兩下、三下，用力壓、不要停。"
       - id: s6_start_rate_c
         text: "速度大概一分鐘一百到一百二十下，壓下去再讓胸口彈回來。"
       - id: s6_start_depth_c
