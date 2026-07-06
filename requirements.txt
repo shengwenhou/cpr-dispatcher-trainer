@@ -1,0 +1,32 @@
+# CPR 派遣員訓練工具 — Python 依賴清單
+#
+# 安裝：pip install -r requirements.txt
+#
+# 版本鎖定為開發機（Python 3.12）已驗證可運作的實際安裝版本，非任意挑選；
+# 升版前請先於開發機驗證再更新本檔。
+#
+# 不在此列的執行期依賴（非 pip 套件，另行安裝／內建）：
+# - STT：spike/stt_spike，Swift 編譯的原生 binary（非 Python 依賴），
+#   編譯方式見 spike/README.md。
+# - TTS：預錄音檔播放用 macOS 內建 afplay；即時生成（層 4）後備用 macOS say。
+#   兩者皆為 macOS 系統工具，非 pip 依賴。
+
+# ── 執行期核心（引擎＋web 骨架）──────────────────────────────────
+fastapi==0.139.0
+uvicorn==0.50.0
+starlette==1.3.1
+pydantic==2.13.2
+PyYAML==6.0.3
+websockets==16.0
+anyio==4.13.0
+
+# ── LLM 意圖分類（Vertex AI）──────────────────────────────────────
+# 認證走環境變數 GOOGLE_APPLICATION_CREDENTIALS（ADC）；金鑰內容與路徑絕不進 repo。
+google-genai==1.73.1
+google-api-core==2.30.3
+google-auth==2.49.2
+
+# ── 開發／測試 ────────────────────────────────────────────────────
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1

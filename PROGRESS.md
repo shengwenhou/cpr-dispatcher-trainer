@@ -75,8 +75,26 @@
 - Gemini TTS 生成有隨機性：個別句子聽感異常時刪 raw 重跑即可（斷點續跑會補）。
 - **TTS 示範數數節奏過慢（55–75/min，未達壓胸標準）**：S6 三句含數數的音檔（`s6_encourage_v03`、`s6_start_c`、`s6_start_v01`）由 `tools/fix_counting_tempo.py` 後製——自動切點偵測、僅數數段 atempo 變速、節奏驗證至 110 下/分鐘（AHA 100–120 標準內），指令段維持原速。維護者已試聽核可。**重新批次合成後 final 會還原成未修正版，必須重跑一次本腳本**。`s6_start_v01` 台詞同步改為「一下、兩下、三下」型（維護者核定，統一數數風格）。
 
+## 2026-07-06（同日稍晚）— FSM 引擎＋三 Provider 介面完成 ✅
+
+### 已完成（SPEC 第九節第 3 項）
+
+1. **FSM 對話引擎**（`server/engine/`）：S0–S7、locale/情境參數化、slot 跳步＋chain-advance、五層防禦全數實作（跳步／元台詞拼接／FAQ 18 意圖／層 4 受約束生成含 logs/layer4/ 存證待課後審核／兩級沉默 timeout）。核心設計：**引擎純同步決定性、零 I/O**，副作用以 SpeakAction 回傳由 driver 執行——完整可測、文字/語音模式共用同一顆引擎。
+2. **三 Provider**（`server/providers/`）：STT＝subprocess 驅動 spike binary 消費 JSONL；LLM＝Vertex `gemini-2.5-flash-lite` constrained JSON 多 slot 意圖分類（實測 0.7–1.6s）＋ RegexFastPath（S6 數數/結束訊號不走 LLM）＋ keyword 降級；TTS＝預錄 id→wav（cache key 含 locale）＋ `say` 動態後備。
+3. **Metrics 事件流**：monotonic、每筆附觸發原句、JSONL 可序列化；SPEC 第六節指標全對齊。
+4. **文字模式 harness**（`server/cli_harness.py`）：stdin 當 STT、stdout 當 TTS，支援 /wait /fault 模擬指令；`--no-llm` 可離線跑。
+5. **canonical 四角色制**：詢問句（slot 已填則抑制）／確認判定句（填滿才播）／always-voice／**條件句**（`CONDITIONAL_LINES` 宣告式表格，依 slot 值選句——S4 瀕死喘息探詢與判定句的臨床正確觸發：BREATHING=UNCLEAR→追問 probe、AGONAL→「這種喘」判定、ABSENT→「沒有在正常呼吸」判定）。
+6. pytest **72 全綠**；驗收 transcript 於 `sessions/`（gitignored）。
+
+### 引擎階段設計要點（下階段 UI 必讀）
+
+- 對話入口：`server/runtime.py` 的 driver 編排（fastpath→LLM→keyword），UI/WS 層接上它而非直接碰 fsm。
+- S0/S6/S7 不套沉默 timeout（壓胸沉默＝專心，不打斷）；S6 插播計時器 15–20s。
+- 設定集中 `server/config.py`（`CPR_*` 環境變數可覆蓋）；LLM 認證共用 TTS 的 service account（GOOGLE_APPLICATION_CREDENTIALS）。
+- 依賴已入 requirements.txt（fastapi/uvicorn/pytest 等，venv 快照已更新）。
+
 ### 待辦（下次 session 從這裡接手）
 
-1. FSM 引擎骨架 + 三 Provider 介面（STT 模組直接移植 spike 的管線結構與六項工程發現；台詞庫吃 `adult_script.yaml`；音檔播放按 id 取 `assets/audio/<locale>/<id>.wav`）。
-2. 課堂模式 UI 與資料模型（Class → StudentSession → Events）。
-3. 報告輸出（Word／Excel／dashboard）。
+1. 課堂模式 UI 與資料模型（Class → StudentSession → Events）；WebSocket 接 runtime driver；真語音整測（麥克風＋喇叭，需維護者在 mini 本機配合）。
+2. 報告輸出（Word／Excel／debriefing dashboard）。
+3. 積欠項：README 文件地圖補 `docs/engine.md` 連結。
