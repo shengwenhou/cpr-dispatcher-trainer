@@ -275,14 +275,15 @@ class DialogueEngine:
         actions: list[SpeakAction] = []
         layer = 1 if trigger else 0
 
-        # (0) 當前狀態的 gating slot 若「已填但不滿足」（如 S4 呼吸=UNCLEAR 描述模糊），
-        #     不推進——播該狀態的條件釐清句（如 s4_agonal_probe_c 追問是否瀕死喘息），
-        #     停在原狀態等更明確的回報。
+        # (0) 當前狀態的 gating slot 若「已填但不滿足」（如 S4 呼吸=UNCLEAR 描述模糊、
+        #     S3 意識=YES 有反應但情境為無意識假人），不推進——有條件句就播（S4 probe），
+        #     沒有就重問當前問句（S3「有反應」→ 重問確認），停在原狀態等更明確的回報。
         cur_slot = GATING_SLOT.get(self.state)
         if cur_slot is not None:
             cur_val = self.filled.get(cur_slot)
             if cur_val is not None and not slot_satisfies(cur_slot, cur_val):
-                return self._conditional_actions(self.state, layer)
+                cond = self._conditional_actions(self.state, layer)
+                return cond if cond else self._reask_current(layer=layer)
 
         # (1) 當前狀態的 gating slot 若「剛」被這句話填滿（且滿足），先播該狀態的確認/承接/條件句
         #     （如 S2 拿到地址後播 s2_addr_confirm_c；S4 呼吸判定後依值選 ruling_c／ruling_v01）。

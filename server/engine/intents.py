@@ -112,9 +112,9 @@ def slot_satisfies(slot: Slot, value: SlotValue) -> bool:
 
     - WANTS_AMBULANCE：YES 才過（NO＝要消防車，停留 S1 引導）。
     - LOCATION：PROVIDED／YES 視為已提供。
-    - CONSCIOUSNESS：任何明確判定（YES／NO）皆算「已評估」而通過；臨床上無意識才續走，
-      但「有意識」在本課堂固定情境（無意識假人）中不會發生，FSM 仍以「已評估」推進，
-      避免卡死；真有意識的處置屬進階情境（v1 不涵蓋）。
+    - CONSCIOUSNESS：只有 NO（無意識/無反應）才通過續走 S4；YES（有反應）不通過——本課堂
+      固定為無意識假人，若學員回報「有反應」屬與情境不符，FSM 停在 S3 重問確認，不誤進 S4
+      （真有意識的處置屬進階情境，v1 不涵蓋）。
     - BREATHING：NORMAL 不算通過（需回到正常呼吸分支，但本情境不會發生）；
       ABSENT／AGONAL 視為「無正常呼吸」→ 通過並觸發 OHCA；
       UNCLEAR（描述模糊）不算通過——播 probe 釐清後停在 S4 等更明確的回報。
@@ -126,7 +126,7 @@ def slot_satisfies(slot: Slot, value: SlotValue) -> bool:
     if slot == Slot.LOCATION:
         return value in (SlotValue.PROVIDED, SlotValue.YES)
     if slot == Slot.CONSCIOUSNESS:
-        return value in (SlotValue.YES, SlotValue.NO)
+        return value == SlotValue.NO  # YES 不通過：停 S3 重問（無意識假人情境）
     if slot == Slot.BREATHING:
         return value in (SlotValue.ABSENT, SlotValue.AGONAL)  # UNCLEAR/NORMAL 不通過
     if slot == Slot.POSITIONING_DONE:

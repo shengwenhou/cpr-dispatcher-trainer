@@ -91,6 +91,101 @@ def detect_step_done(text: str) -> bool:
     return any(p in text for p in _STEP_DONE_PHRASES)
 
 
+# ── 語境化極簡回應解讀（contextual short-answer resolution）──────────────
+# 問題：單字/極簡回答的意義完全由「當前問句」決定——「不會」對 yes-no 問句是明確否定；
+# 「好」對指令句是完成確認；「有」在 S3 問意識＝有反應、在 S4 問呼吸＝有呼吸(但未描述→追問)、
+# 在 S5 指令後＝做好了。現有分類鏈對這類超短句信心不足，全落層 4（維護者第三場實證）。
+# 解法：整詞匹配的極簡回答，依當前狀態直接解讀，超短句優先短路不勞 LLM。
+
+# 句尾語氣詞/標點：比對前先剝除，讓「好，」「好啦」「有喔」等同「好」「有」。
+_TRAILING_PARTICLES = "，。？！、～…,.?!~ 　啦喔啊呀呢吧嘛耶欸哦囉勒"
+
+# 各類極簡回答「整詞」清單（比對時須等於整句去尾語氣後的字串）。
+_AFFIRM_WORDS = {"好", "好了", "有", "對", "嗯", "是", "是的", "OK", "ok", "Ok", "可以", "會", "行", "嗯嗯", "對對"}
+_NEGATE_WORDS = {"不會", "沒有", "沒了", "不行", "叫不醒", "沒反應", "沒", "不", "沒動", "都沒有", "沒有反應"}
+
+# 完成式 pattern（不受長度限制的整句 regex）：早就…了／已經…了／…好了／…起來了／做完了。
+# 代表「當前這一步我已做好」＝完成確認。須先排除否定（如「已經沒呼吸了」由否定詞優先處理）。
+_COMPLETION_RE = re.compile(r"(早就.*了)|(已經.*[了好])|(.+好了)|(.+起來了)|(弄好了)|(做完了)|(做好了)")
+
+
+def _normalize_short(text: str) -> str:
+    """剝除句尾語氣詞與標點，回傳核心字串（供整詞比對）。"""
+    return (text or "").strip().rstrip(_TRAILING_PARTICLES).strip()
+
+
+def _is_short(core: str, max_len: int = 4) -> bool:
+    """核心字串是否夠短（極簡回答）。以字數計，中文一字一單位。"""
+    return 0 < len(core) <= max_len
+
+
+def resolve_short_answer(text: str, state: State) -> "IntentResult | None":
+    """語境化極簡回應解讀。命中回傳帶對應 slot/step_done 的 IntentResult；否則 None。
+
+    誤觸防範：只有「整句（去尾語氣後）＝該詞」才短路（「好痛」「有人嗎」不命中，因去尾後
+    仍非整詞）；完成式 pattern 不受長度限制但須非否定。否定優先於肯定（如「不」「沒」）。
+    """
+    if not text:
+        return None
+    core = _normalize_short(text)
+    if not core:
+        return None
+
+    res = IntentResult(source="regex_fastpath", raw=text)
+
+    # 1) 否定（整詞、短）：依狀態解讀。優先於肯定。
+    if _is_short(core, 4) and core in _NEGATE_WORDS:
+        if state == State.S3:
+            res.slots[Slot.CONSCIOUSNESS] = SlotValue.NO   # 「不會/沒反應」＝無意識
+            res.confidence = 0.8
+            return res
+        if state == State.S4:
+            res.slots[Slot.BREATHING] = SlotValue.ABSENT    # 「沒有/沒了」＝無呼吸
+            res.confidence = 0.8
+            return res
+        # S1/S2/S5/S6：否定的極簡回答無明確 slot 語意，交由 LLM/後續處理
+        return None
+
+    # 2) 完成式確認（「我早就扣起來了」）：非否定 → 當前步完成。主要用於 S5。
+    #    但「都擺好了/手也放好了」屬全局完成（→ POSITIONING_DONE 跳步），語意更明確，
+    #    交由 detect_all_positioned 處理，這裡讓路（回 None 前先跳過完成式分支）。
+    if (
+        _COMPLETION_RE.search(core)
+        and not detect_all_positioned(core)
+        and not any(n in core for n in ("不", "沒", "別"))
+    ):
+        if state == State.S5:
+            res.step_done = True
+            res.confidence = 0.8
+            return res
+        # S3/S4 的「已經…了」多半仍是狀態描述（如「已經醒了」），交 LLM 判；不在此短路
+
+    # 3) 肯定/確認（整詞、短）：依狀態解讀。
+    if _is_short(core, 4) and core in _AFFIRM_WORDS:
+        if state == State.S5:
+            res.step_done = True                            # 指令後「好/有」＝做好了→下一步
+            res.confidence = 0.8
+            return res
+        if state == State.S3:
+            # 「有/會」＝有反應（CONSCIOUS=YES）。課堂固定無意識，FSM 對 YES 停 S3 重問（見 slot_satisfies）。
+            if core in ("有", "會", "對", "是", "是的", "對對"):
+                res.slots[Slot.CONSCIOUSNESS] = SlotValue.YES
+                res.confidence = 0.75
+                return res
+            return None  # 「好/嗯/OK」對意識問句語意不明，交 LLM
+        if state == State.S4:
+            # 「有」＝有呼吸但未描述→UNCLEAR（觸發既有 probe 條件句）。
+            if core in ("有", "對", "是", "是的", "會", "對對"):
+                res.slots[Slot.BREATHING] = SlotValue.UNCLEAR
+                res.confidence = 0.75
+                return res
+            return None
+        # S1/S2/S6：肯定極簡回答無明確 slot；S6 的「好」不需特別處理（壓胸中）
+        return None
+
+    return None
+
+
 class RegexFastPath:
     """S6 數數與結束訊號的即時偵測器。無狀態，純函式包裝。"""
 
@@ -113,6 +208,12 @@ class RegexFastPath:
             res.confidence = 0.85
             res.slots[Slot.COMPRESSIONS_STARTED] = SlotValue.YES
             return res
+
+        # 語境化極簡回應（好／有／不會／我早就…了）：依當前問句解讀，超短句優先短路。
+        # 誤觸防範在 resolve_short_answer 內（整詞＋長度門檻）。
+        short = resolve_short_answer(text, state)
+        if short is not None:
+            return short
 
         # S5「全部擺好」明確全局完成（都擺好了／手也放好了）→ 填 POSITIONING_DONE，
         # 引擎據此跳過剩餘 S5 步驟直接進 S6。優先於 step_done（較明確）。
@@ -159,6 +260,14 @@ class KeywordFallbackClassifier:
         res = IntentResult(source="keyword_fallback", raw=text)
         if not text:
             return res
+
+        # 語境化極簡回應優先（好／有／不會／我早就…了）：與 fastpath 同一套解讀，
+        # 讓降級路徑也能處理單字回答。命中即回（標記為 keyword_fallback 來源）。
+        short = resolve_short_answer(text, state)
+        if short is not None:
+            short.source = "keyword_fallback"
+            return short
+
         t = text
 
         def has(words: list[str]) -> bool:
