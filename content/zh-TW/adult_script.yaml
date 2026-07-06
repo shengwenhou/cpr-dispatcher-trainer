@@ -1,0 +1,258 @@
+# 成人情境台詞庫（zh-TW）定稿 v1.0
+# 由 adult_script_draft.md 經維護者（急診醫師）逐句審定產生；本檔為機器可讀正本，
+# TTS 批次合成與 FSM 引擎以本檔為準。台詞 id 即音檔檔名（<id>.wav）與 cache key 一部分。
+meta:
+  locale: zh-TW
+  scenario: adult
+  version: "1.0"
+  approved_date: "2026-07-06"
+  source: adult_script_draft.md
+
+states:
+  s0:
+    canonical:
+      - id: s0_open_c
+        text: "你好，這裡是天才消防局，請問你要消防車還是救護車？"
+    variants: []
+  s1:
+    canonical:
+      - id: s1_need_ambulance_c
+        text: "好，馬上幫你安排救護車，你先別急。"
+      - id: s1_fire_redirect_c
+        text: "不好意思，這個練習只處理救護的部分，你應該是要叫救護車吧？"
+        branch: fire_truck    # 消防車分支句
+    variants:
+      - id: s1_need_ambulance_v01
+        text: "好，救護車這邊處理，你冷靜聽我說。"
+        of: s1_need_ambulance_c
+      - id: s1_need_ambulance_v02
+        text: "收到，馬上幫你派出救護車。"
+        of: s1_need_ambulance_c
+      - id: s1_fire_redirect_v01
+        text: "消防車的部分這次先不處理，我先幫你叫救護車，可以嗎？"
+        of: s1_fire_redirect_c
+      - id: s1_fire_redirect_v02
+        text: "你應該是口誤，我幫你派出救護車了！"
+        of: s1_fire_redirect_c
+  s2:
+    canonical:
+      - id: s2_addr_ask_c
+        text: "請問地址在哪裡？"
+      - id: s2_addr_confirm_c
+        text: "好的，地址我記下了，預估5分鐘之後會抵達。"
+    variants:
+      - id: s2_addr_ask_v01
+        text: "你現在人在什麼地方？地址給我。"
+        of: s2_addr_ask_c
+      - id: s2_addr_ask_v02
+        text: "告訴我你們的地址，門牌幾號？"
+        of: s2_addr_ask_c
+      - id: s2_addr_ask_v03
+        text: "位置在哪裡？把地址講給我聽。"
+        of: s2_addr_ask_c
+  s3:
+    canonical:
+      - id: s3_consciousness_c
+        text: "你先看一下，他叫得醒嗎？有沒有反應？"
+    variants:
+      - id: s3_consciousness_v01
+        text: "拍拍他的肩膀，大聲叫他，他有反應嗎？"
+        of: s3_consciousness_c
+      - id: s3_consciousness_v02
+        text: "你叫叫看他，他會不會睜眼、會不會動？"
+        of: s3_consciousness_c
+      - id: s3_consciousness_v03
+        text: "他現在人清不清醒？叫他有沒有回應？"
+        of: s3_consciousness_c
+  s4:
+    canonical:
+      - id: s4_breathing_c
+        text: "你看他的胸口，有沒有正常起伏？他有在正常呼吸嗎？"
+      - id: s4_agonal_probe_c
+        text: "他呼吸聽起來怎麼樣？是不是很久才喘一下？"
+      - id: s4_agonal_ruling_c
+        text: "這種喘不算正常呼吸，代表情況很緊急，我們現在馬上開始壓胸。"
+    variants:
+      - id: s4_breathing_v01
+        text: "靠近看他的胸部，有沒有規律地一起一伏？"
+        of: s4_breathing_c
+      - id: s4_breathing_v02
+        text: "他這樣算有正常呼吸嗎？胸口有沒有明顯在動？"
+        of: s4_breathing_c
+      - id: s4_agonal_probe_v01
+        text: "那個喘的聲音怪不怪？會不會像打呼、或喉嚨有痰的聲音？"
+        of: s4_agonal_probe_c
+      - id: s4_agonal_probe_v02
+        text: "他是不是隔好久才用力吸一大口？中間都沒在呼吸？"
+        of: s4_agonal_probe_c
+      - id: s4_agonal_ruling_v01
+        text: "他沒有在正常呼吸，不要再等了，我教你壓胸，跟著我做。"
+        of: s4_agonal_ruling_c
+  s5:
+    canonical:
+      - id: s5_position_kneel_c
+        text: "你跪在他旁邊。"
+      - id: s5_position_handbase_c
+        text: "手掌根放在兩個乳頭連線的正中間。"
+      - id: s5_position_stack_c
+        text: "另一隻手交疊壓在上面，手指扣起來。"
+      - id: s5_position_arms_c
+        text: "手臂打直，用肩膀的力量往下壓。"
+    variants:
+      - id: s5_position_kneel_v01
+        text: "你的膝蓋靠到他身體旁邊跪好。"
+        of: s5_position_kneel_c
+      - id: s5_position_handbase_v01
+        text: "掌根對準他胸口正中央，就是兩個乳頭中間。"
+        of: s5_position_handbase_c
+      - id: s5_position_stack_v01
+        text: "兩隻手疊在一起，下面那隻手掌根貼著胸口。"
+        of: s5_position_stack_c
+  s6:
+    canonical:            # 起始指令，依序播放
+      - id: s6_start_c
+        text: "現在開始壓，跟著我數，一、二、三，用力壓、不要停。"
+      - id: s6_start_rate_c
+        text: "速度大概一分鐘一百到一百二十下，壓下去再讓胸口彈回來。"
+      - id: s6_start_depth_c
+        text: "壓深一點，大概五公分，不要擔心壓不夠深，幾乎大家都是壓太淺。"
+    variants:
+      - id: s6_start_v01
+        text: "好，現在雙手用力往下壓，大聲數一、二、三，不要停下來。"
+        of: s6_start_c
+      - id: s6_start_v02
+        text: "開始壓胸，跟著我的節奏數，用力、快一點，中間不要停。"
+        of: s6_start_c
+    inserts:              # 鼓勵／糾正插播池，計時器每 15–20 秒輪替
+      - id: s6_encourage_v01
+        text: "很好，就是這樣，繼續壓，不要停。"
+      - id: s6_encourage_v02
+        text: "你做得很好，保持這個力道。"
+      - id: s6_encourage_v03
+        text: "大聲數給我聽，一下、兩下、三下、四下。"
+      - id: s6_encourage_v04
+        text: "壓快一點，跟上我的速度。"
+      - id: s6_encourage_v05
+        text: "再壓深一點，用力往下。"
+      - id: s6_encourage_v06
+        text: "每一下都讓胸口完全彈回來，不要壓著不放。"
+      - id: s6_encourage_v07
+        text: "手臂打直，用身體的重量往下壓。"
+      - id: s6_encourage_v08
+        text: "不要停，你壓的每一下都很重要。"
+      - id: s6_encourage_v09
+        text: "累了沒關係，旁邊有人就換手，但中斷越短越好。"
+      - id: s6_encourage_v10
+        text: "快撐不住的話跟我說，但手先不要離開，撐著再壓幾下。"
+      - id: s6_encourage_v11
+        text: "節奏抓穩，一下接一下，不要忽快忽慢。"
+      - id: s6_encourage_v12
+        text: "做得很好，救護車正在趕過來，你先撐著。"
+  s7:
+    canonical:
+      - id: s7_handover_c
+        text: "好，救護人員到了，你辛苦了，接下來交給他們，你可以放手了。"
+    variants:
+      - id: s7_handover_v01
+        text: "救護人員接手了，你做得非常好，剩下讓他們處理就好。"
+        of: s7_handover_c
+      - id: s7_handover_v02
+        text: "他們到現場了，你剛剛壓得很棒，可以先休息一下。"
+        of: s7_handover_c
+
+meta_phrases:
+  clarify:
+    - id: meta_clarify_01
+      text: "不好意思，我沒聽清楚，你再說一次好嗎？"
+    - id: meta_clarify_02
+      text: "收訊有點不清楚，你大聲一點、慢慢說。"
+    - id: meta_clarify_03
+      text: "我剛剛沒聽到，麻煩你再講一遍。"
+  bridge:       # 前綴句，後接當前狀態 canonical 問句
+    - id: meta_bridge_01
+      text: "我了解，我知道你很急，現在最重要的是……"
+    - id: meta_bridge_02
+      text: "我知道你很緊張，我會一直在線上，我們先……"
+    - id: meta_bridge_03
+      text: "別怕，有我在，你聽我的，接下來……"
+  takeover:
+    - id: meta_takeover_01
+      text: "你先聽我說，跟著我做就好，不用想太多。"
+    - id: meta_takeover_02
+      text: "現在你什麼都不用問，我講一步、你做一步，好嗎？"
+  timeout_l1:
+    - id: meta_timeout_l1_01
+      text: "喂？你還在嗎？"
+    - id: meta_timeout_l1_02
+      text: "你聽得到我嗎？跟我說一聲。"
+  timeout_l2:
+    - id: meta_timeout_l2_01
+      text: "如果你在旁邊，出個聲讓我知道，我一直都在線上。"
+    - id: meta_timeout_l2_02
+      text: "我還在這裡，別擔心，有聽到就回我一句。"
+  tech_fault:
+    - id: meta_tech_fault_01
+      text: "不好意思，這邊系統有點狀況，請現場的老師幫忙一下。"
+  filler:
+    - id: meta_filler_01
+      text: "嗯，你等我一下喔。"
+    - id: meta_filler_02
+      text: "好，我看一下。"
+    - id: meta_filler_03
+      text: "嗯哼，我聽到了。"
+
+faq:
+  - id: faq_aed_use_ans
+    intent: "有人拿 AED 來了要不要用"
+    text: "有 AED 很好，讓另一個人去拿、去開機，你不要停、繼續壓。"
+  - id: faq_aed_howto_ans
+    intent: "AED 怎麼用"
+    text: "打開 AED 電源，照它的語音貼貼片，它會自己判斷，你先專心壓。"
+  - id: faq_turn_over_ans
+    intent: "壓胸中要不要把他翻成側躺（趴臥情境不在此意圖，由現場講師處理）"
+    text: "不用翻過來，讓他保持臉朝上平躺，你繼續壓胸就對了。"
+  - id: faq_rib_crack_ans
+    intent: "好像壓斷肋骨了怎麼辦"
+    text: "壓的時候有聲音是正常的，代表你壓得夠深，不要停、繼續壓。"
+  - id: faq_vomit_ans
+    intent: "他吐了怎麼辦"
+    text: "把他的頭側到一邊，讓東西流出來，清一下嘴巴再翻回來繼續壓。"
+  - id: faq_rescue_breath_ans
+    intent: "要不要做人工呼吸／口對口"
+    text: "這次不用口對口，你只要專心壓胸就好，這樣就很有效。"
+  - id: faq_cyanosis_ans
+    intent: "他臉色發黑發紫怎麼辦"
+    text: "臉色發黑發紫是缺氧，正是要一直壓的原因，你不要停。"
+  - id: faq_philtrum_ans
+    intent: "要不要掐人中"
+    text: "掐人中沒有用，把力氣留著壓胸，繼續壓比較重要。"
+  - id: faq_check_awake_ans
+    intent: "可以停下來看他醒了沒嗎"
+    text: "先不要停下來看，壓胸不能中斷，他有動靜你再馬上跟我說。"
+  - id: faq_depth_ans
+    intent: "要壓多深"
+    text: "大概壓下去五公分，用力一點沒關係。"
+  - id: faq_rate_ans
+    intent: "要壓多快"
+    text: "速度大概一分鐘一百到一百二十下，跟著我數的節奏就對了。"
+  - id: faq_tired_ans
+    intent: "我壓到累了怎麼辦"
+    text: "你做得很好，旁邊有人就換手，交接快一點，手不要停太久。"
+  - id: faq_helper_ans
+    intent: "旁邊有人能幫什麼"
+    text: "請他準備跟你換手壓胸，也可以去門口等救護車、把 AED 拿來。"
+  - id: faq_pillow_ans
+    intent: "要不要墊枕頭"
+    text: "不要墊枕頭，頭墊高會影響效果，讓他平躺在硬的地面就好。"
+  - id: faq_open_door_ans
+    intent: "大門要不要先開／要不要去開門"
+    text: "你先不要離開他，如果有別人，請他去開大門、帶救護人員進來。"
+  - id: faq_hard_surface_ans
+    intent: "他躺在床上／沙發上可以壓嗎"
+    text: "如果他在床上或沙發，太軟了，把他移到地板上再壓。"
+  - id: faq_when_stop_ans
+    intent: "什麼時候可以停"
+    text: "一直壓到救護人員接手為止，中間都不要停，我會陪你到最後。"
+  - id: faq_child_scope_ans
+    intent: "這是小孩／嬰兒要不要不一樣"
+    text: "這次練習是大人的狀況，你就照我說的壓胸，不用另外分。"
