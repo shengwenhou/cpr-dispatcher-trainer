@@ -105,6 +105,31 @@
 
 ### 待辦（下次 session 從這裡接手）
 
-1. 課堂模式 UI 與資料模型（Class → StudentSession → Events）；WebSocket 接 runtime driver；真語音整測（麥克風＋喇叭，需維護者在 mini 本機配合）。
+1. 課堂模式 UI 與資料模型（Class → StudentSession → Events）；WebSocket 接 runtime driver；真語音整測（麥克風＋喇叭，需維護者在 mini 本機配合）。→ **UI／資料模型／WS 已於 2026-07-07 完成（見下節）**
 2. 報告輸出（Word／Excel／debriefing dashboard）。
-3. 積欠項：README 文件地圖補 `docs/engine.md` 連結；`docs/engine.md` 補 S5 逐步模式與 STEP_DONE 章節（fast-worker 未完成）。
+3. 積欠項：README 文件地圖補 `docs/engine.md` 連結；`docs/engine.md` 補 S5 逐步模式與 STEP_DONE 章節（fast-worker 未完成）。→ 已於 commit 2e77330／9e0ff5f 補齊。
+
+## 2026-07-07 — 課堂模式 UI＋資料模型＋WS 整合層完成 ✅（SPEC 第九節第 4 項）
+
+### 已完成
+
+1. **架構定案**（deep-reasoner 與 codex 平行獨立設計後整合，兩案在關鍵處收斂）：
+   - 持久化＝**JSONL＋manifest**（否決 SQLite）：`data/<class_id>/` 下 `class.json`（含 SessionRef 索引）＋每場 `<session_id>.jsonl`（事件流逐筆 append）＋`.meta.json`（狀態與 summary 快照）。理由：單機單麥克風零寫入併發、引擎 metrics 原生 JSONL、append-only 崩潰損失最小、純文字對維護者可讀。
+   - **VoiceDriver＝STT 整場不重啟＋driver 層 half-duplex gate**：非 S6 發聲窗（afplay 進程存活＋echo tail）內 FINAL 硬丟棄＋grace 窗內文字相似度雙保險（門檻 0.75）；S6 軟 gate 只認 counting＋end_signal（首次數數起壓時間戳不丟），其餘丟棄記 GATE_DROPPED 事件（debriefing 素材）。
+   - **雙時鐘**：metrics 真 monotonic（SPEC 第六節指標不失真）；引擎 now 餵「邏輯時鐘」（發聲窗凍結、以 session 起點為 0）→ 播放不算沉默、S6 插播不疊播、S5 auto-advance 播完才續走。engine／providers／runtime.py／metrics.py 零改動。
+   - 場次狀態存 server 不綁 WS：誤刷新以 session_id `resume`，snapshot 重建（含學員代號）。
+2. **新增模組**：`server/ws_protocol.py`（envelope＋MsgType；error 用 message_key 走 i18n）、`server/session_store.py`、`server/audio_player.py`（async afplay/say、可 kill 供緊急中止）、`server/session_runner.py`（Runner 基底＋Text/Voice 子類）；`app.py` 接真 handler（WS 路徑 `/ws/classroom`）＋web/ 靜態 mount；config／factory 純新增。
+3. **前端 `web/`**（codex 產出後對齊修正）：vanilla 單頁無 build step、離線可用；開始畫面（情境六項僅成人可選、語言選單僅繁中、學員代號、語音／文字模式）、練習畫面（S0–S7 步驟條、對話流、派遣員說話中指示、緊急中止二次確認、通話計時）、場次結束個人指標卡（AHA 達標紅綠標示）、結束課堂占位；UI 字串全外部化 `web/i18n/zh-TW.json`（key 小寫 s0–s7 與後端 state 值一致）。
+4. **start.command**：雙擊啟動、自動開瀏覽器；啟動時載入 `~/.config/cpr-dispatcher-trainer/env.sh`（repo 外本機 env，GOOGLE_APPLICATION_CREDENTIALS 放這裡，已在開發機建好）；`CPR_BIND_HOST=0.0.0.0` 可供區網連入。
+5. **端到端驗證（文字模式）**：真 uvicorn＋真瀏覽器完整三場 S0→S7（含 S6 插播鼓勵語、層 5 兩級沉默 reprompt、緊急流程、誤刷新 resume 續走完場）；落地資料與指標全數正確。pytest **116 → 134 全綠**。
+
+### 本階段坑（後續必讀）
+
+- **虛擬時鐘測試抓不到的真時鐘 bug**：`engine.start()` 的 S0 進入基準（metrics.now()，session 起點≈0）與 runner 邏輯時鐘若用 monotonic 絕對值為底會基準不一致，S0 dwell 爆成開機時長量級。已修（邏輯時鐘統一以 metrics.now() 為底）＋新增大絕對值時鐘回歸測試。教訓：**時間相關功能必須有非零起點時鐘的測試**。
+- **平行實作的接縫錯位**：WS 路徑（後端沿用骨架 `/ws/session` vs 前端 `/ws/classroom`）、summary 欄位名（前端 spec 臆測 vs `metrics.summary()` 正本）兩處在端到端才抓到。教訓：跨 worker 對接的欄位名一律以現有程式碼為正本寫進委派 prompt，不憑記憶轉述。
+- 真語音（VoiceSessionRunner）的 gate 三態／雙時鐘已以假 STT＋假 player 單元驗證，但 **echo_tail_ms 與相似度門檻需真聲學調校**——這是下一步真語音實測的重點。
+
+### 待辦（下次 session 從這裡接手）
+
+1. **真語音整測**（需維護者在 mini 本機配合；指引已交付於維護者私有文件區《真語音實測指引》）：DJI Mic 2＋喇叭、全語音 S0→S7、延遲對照 SPEC 第七節（預錄命中 500–800ms）、echo gate 參數調校（CPR_ECHO_TAIL_MS 等）、層 4 存證審核。
+2. 報告輸出（Word／Excel／debriefing dashboard）——資料層已存夠（events.jsonl＋summary），純消費端工作。
