@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title data-i18n="app.title"></title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="top-bar">
+        <div>
+          <p class="eyebrow" data-i18n="app.kicker"></p>
+          <h1 data-i18n="app.title"></h1>
+        </div>
+        <div class="connection-pill" id="connectionStatus" data-state="offline">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span data-i18n="connection.offline"></span>
+        </div>
+      </header>
+
+      <main>
+        <section class="screen is-active" id="startScreen" aria-labelledby="startTitle">
+          <div class="start-grid">
+            <div class="setup-panel">
+              <h2 id="startTitle" data-i18n="start.title"></h2>
+              <p class="panel-copy" data-i18n="start.subtitle"></p>
+
+              <form id="startForm" class="setup-form">
+                <label class="field-label" for="scenarioSelect" data-i18n="start.scenario_label"></label>
+                <select id="scenarioSelect" name="scenario"></select>
+
+                <label class="field-label" for="localeSelect" data-i18n="start.locale_label"></label>
+                <select id="localeSelect" name="locale"></select>
+
+                <label class="field-label" for="studentAlias" data-i18n="start.student_label"></label>
+                <input id="studentAlias" name="studentAlias" autocomplete="off" data-i18n-attr="placeholder:start.student_placeholder">
+
+                <fieldset class="mode-toggle">
+                  <legend data-i18n="start.mode_label"></legend>
+                  <label>
+                    <input type="radio" name="mode" value="voice" checked>
+                    <span data-i18n="start.mode_voice"></span>
+                  </label>
+                  <label>
+                    <input type="radio" name="mode" value="text">
+                    <span data-i18n="start.mode_text"></span>
+                  </label>
+                </fieldset>
+
+                <button class="primary-action" id="startButton" type="submit" disabled>
+                  <span data-i18n="start.start_button"></span>
+                </button>
+              </form>
+            </div>
+
+            <aside class="brief-panel">
+              <h3 data-i18n="start.brief_title"></h3>
+              <ul>
+                <li data-i18n="start.brief_1"></li>
+                <li data-i18n="start.brief_2"></li>
+                <li data-i18n="start.brief_3"></li>
+              </ul>
+            </aside>
+          </div>
+        </section>
+
+        <section class="screen" id="practiceScreen" aria-labelledby="practiceTitle">
+          <div class="practice-header">
+            <div>
+              <p class="eyebrow" data-i18n="practice.student_prefix"></p>
+              <h2 id="practiceTitle"><span id="activeStudent"></span></h2>
+            </div>
+            <div class="timer-block">
+              <span data-i18n="practice.call_timer"></span>
+              <strong id="callTimer">00:00</strong>
+            </div>
+          </div>
+
+          <ol class="state-steps" id="stateSteps" aria-label="FSM"></ol>
+
+          <div class="practice-layout">
+            <section class="conversation-panel" aria-live="polite">
+              <div class="conversation-flow" id="conversationFlow"></div>
+              <div class="speaking-indicator" id="speakingIndicator" hidden>
+                <span data-i18n="practice.dispatcher_speaking"></span>
+                <span class="pulse-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              </div>
+            </section>
+
+            <aside class="status-panel">
+              <h3 data-i18n="practice.status_title"></h3>
+              <dl>
+                <div>
+                  <dt data-i18n="practice.current_state"></dt>
+                  <dd id="currentStateLabel"></dd>
+                </div>
+                <div>
+                  <dt data-i18n="practice.last_event"></dt>
+                  <dd id="lastEventLabel" data-i18n="practice.no_event"></dd>
+                </div>
+              </dl>
+              <button class="danger-action" id="abortButton" type="button">
+                <span data-i18n="practice.abort_button"></span>
+              </button>
+              <button class="secondary-action" id="manualEndButton" type="button">
+                <span data-i18n="practice.end_session_button"></span>
+              </button>
+            </aside>
+          </div>
+
+          <form class="text-input-bar" id="textInputBar" hidden>
+            <input id="studentTextInput" autocomplete="off" data-i18n-attr="placeholder:practice.text_placeholder">
+            <button type="submit" data-i18n="practice.send_button"></button>
+          </form>
+        </section>
+
+        <section class="screen" id="summaryScreen" aria-labelledby="summaryTitle">
+          <div class="summary-head">
+            <div>
+              <p class="eyebrow" data-i18n="summary.kicker"></p>
+              <h2 id="summaryTitle" data-i18n="summary.title"></h2>
+            </div>
+            <div class="summary-student" id="summaryStudent"></div>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card" id="ohcaCard">
+              <span data-i18n="summary.ohca_time"></span>
+              <strong id="ohcaValue"></strong>
+              <em id="ohcaStatus"></em>
+            </article>
+            <article class="metric-card" id="compressionCard">
+              <span data-i18n="summary.compression_time"></span>
+              <strong id="compressionValue"></strong>
+              <em id="compressionStatus"></em>
+            </article>
+            <article class="metric-card">
+              <span data-i18n="summary.ems_time"></span>
+              <strong id="emsValue"></strong>
+              <em data-i18n="summary.instructor_controlled"></em>
+            </article>
+          </div>
+
+          <div class="summary-grid">
+            <section class="chart-panel">
+              <h3 data-i18n="summary.dwell_title"></h3>
+              <div id="dwellChart" class="bar-list"></div>
+            </section>
+            <section class="chart-panel">
+              <h3 data-i18n="summary.defense_title"></h3>
+              <div id="defenseStats" class="defense-list"></div>
+            </section>
+          </div>
+
+          <div class="summary-actions">
+            <button class="primary-action" id="nextStudentButton" type="button">
+              <span data-i18n="summary.next_student"></span>
+            </button>
+            <button class="secondary-action" id="endClassButton" type="button">
+              <span data-i18n="summary.end_class"></span>
+            </button>
+          </div>
+        </section>
+
+        <section class="screen" id="classEndedScreen" aria-labelledby="classEndedTitle">
+          <div class="class-ended-panel">
+            <p class="eyebrow" data-i18n="class_ended.kicker"></p>
+            <h2 id="classEndedTitle" data-i18n="class_ended.title"></h2>
+            <p data-i18n="class_ended.placeholder"></p>
+            <h3 data-i18n="class_ended.students_title"></h3>
+            <ul id="completedStudents"></ul>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="confirmDialog" class="confirm-dialog">
+      <form method="dialog">
+        <h2 id="confirmTitle"></h2>
+        <p id="confirmMessage"></p>
+        <div class="dialog-actions">
+          <button class="secondary-action" value="cancel" data-i18n="dialog.cancel"></button>
+          <button class="danger-action" id="confirmAccept" value="accept"></button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast-stack" id="toastStack" aria-live="assertive"></div>
+    <script src="./app.js" defer></script>
+  </body>
+</html>

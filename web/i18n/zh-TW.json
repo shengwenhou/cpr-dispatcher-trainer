@@ -1,0 +1,135 @@
+{
+  "meta": {
+    "locale": "zh-TW",
+    "label": "繁體中文",
+    "available": true
+  },
+  "app": {
+    "title": "CPR 派遣員互動訓練工具",
+    "kicker": "課堂模式"
+  },
+  "connection": {
+    "online": "已連線",
+    "offline": "未連線",
+    "connecting": "連線中",
+    "reconnecting": "重新連線中"
+  },
+  "start": {
+    "title": "開始練習",
+    "subtitle": "請選擇情境並輸入學員代號。第一次開始會自動建立課堂。",
+    "scenario_label": "情境",
+    "locale_label": "語言",
+    "student_label": "學員代號",
+    "student_placeholder": "例如 A01",
+    "mode_label": "輸入模式",
+    "mode_voice": "語音模式",
+    "mode_text": "文字模式（開發用）",
+    "start_button": "開始練習",
+    "brief_title": "課堂投影重點",
+    "brief_1": "講師可即時查看 FSM 狀態進度。",
+    "brief_2": "逐字稿與派遣員台詞會自動捲動。",
+    "brief_3": "場次結束後立即顯示個人指標。",
+    "coming_soon": "即將推出"
+  },
+  "scenarios": {
+    "adult": "成人",
+    "child_over_8": "小兒 >8 歲",
+    "child_1_8": "小兒 1–8 歲",
+    "infant_under_1": "<1 歲嬰兒",
+    "pregnant": "懷孕婦女",
+    "advanced": "其他進階情境"
+  },
+  "locales": {
+    "zh-TW": "繁體中文",
+    "ja-JP": "日本語",
+    "en-US": "English"
+  },
+  "practice": {
+    "student_prefix": "目前學員",
+    "call_timer": "通話時間",
+    "dispatcher_speaking": "派遣員說話中",
+    "status_title": "狀態列",
+    "current_state": "目前狀態",
+    "last_event": "最新事件",
+    "no_event": "尚無事件",
+    "abort_button": "緊急中止",
+    "end_session_button": "手動結束場次",
+    "text_placeholder": "輸入學員回覆，按 Enter 送出",
+    "send_button": "送出",
+    "dispatcher_label": "派遣員",
+    "student_label": "學員",
+    "fallback_layer": "Fallback L{layer}",
+    "partial_label": "即時逐字稿"
+  },
+  "states": {
+    "s0": "開場",
+    "s1": "確認需求",
+    "s2": "確認地點",
+    "s3": "確認意識",
+    "s4": "確認呼吸",
+    "s5": "指導擺位",
+    "s6": "壓胸進行中",
+    "s7": "結束"
+  },
+  "summary": {
+    "kicker": "場次結束",
+    "title": "個人指標",
+    "ohca_time": "辨識 OHCA 時間",
+    "compression_time": "開始按壓時間",
+    "ems_time": "EMS 抵達時間",
+    "instructor_controlled": "講師現場掌控",
+    "pass": "達標",
+    "fail": "未達標",
+    "no_data": "無資料",
+    "seconds": "{value} 秒",
+    "dwell_title": "各階段停留",
+    "defense_title": "防禦層觸發統計",
+    "defense_layer2": "Layer 2 釐清／拉回",
+    "defense_layer3": "Layer 3 FAQ",
+    "defense_layer4": "Layer 4 即時生成",
+    "defense_timeouts": "Timeout",
+    "next_student": "下一位學員",
+    "end_class": "結束課堂"
+  },
+  "class_ended": {
+    "kicker": "課堂已結束",
+    "title": "全班報告",
+    "placeholder": "全班報告（Excel／dashboard）將於下一版本提供。",
+    "students_title": "已完成學員",
+    "empty": "尚無已完成學員"
+  },
+  "dialog": {
+    "cancel": "取消",
+    "abort_title": "確認緊急中止？",
+    "abort_message": "這會立即中止目前場次，請確認不是誤觸。",
+    "abort_accept": "確認中止",
+    "end_session_title": "確認結束場次？",
+    "end_session_message": "這會要求後端結束目前場次並產生指標。",
+    "end_session_accept": "結束場次",
+    "end_class_title": "確認結束課堂？",
+    "end_class_message": "這會結束目前課堂，之後需重新建立新課堂。",
+    "end_class_accept": "結束課堂"
+  },
+  "messages": {
+    "i18n_load_failed": "語言檔載入失敗。",
+    "ws_unavailable": "瀏覽器不支援 WebSocket。",
+    "start_requires_alias": "請先輸入學員代號。",
+    "class_created": "課堂已建立。",
+    "session_started": "場次已開始。",
+    "session_resumed": "已恢復進行中場次。",
+    "session_ended": "場次已結束。",
+    "class_ended": "課堂已結束。",
+    "send_failed": "訊息尚未送出，請確認連線狀態。",
+    "unknown_error": "發生未預期錯誤。",
+    "degraded": "系統降級運作。",
+    "socket_closed": "連線中斷，正在嘗試重連。"
+  },
+  "server_messages": {
+    "default": "系統訊息",
+    "backend_unavailable": "後端暫時無法使用。",
+    "invalid_message": "訊息格式不正確。",
+    "session_not_found": "找不到進行中場次。",
+    "stt_degraded": "語音辨識降級運作。",
+    "tts_degraded": "語音播放降級運作。"
+  }
+}

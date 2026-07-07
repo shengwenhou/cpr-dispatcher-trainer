@@ -101,3 +101,73 @@ def build_engine(
         rng=rng,
         layer4_generator=layer4_generator,
     )
+
+
+# ── 課堂模式：組裝 SessionRunner（WS 層用）─────────────────────────
+def _runner_kwargs(cfg: Config):
+    """SessionRunner 共用建構參數（發聲窗／相似度／tick 皆來自 config.server）。"""
+    return dict(
+        echo_tail_ms=cfg.server.echo_tail_ms,
+        echo_similarity_threshold=cfg.server.echo_similarity_threshold,
+        tick_interval_ms=cfg.server.tick_interval_ms,
+    )
+
+
+def build_text_runner(
+    cfg: Config,
+    store=None,
+    class_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    *,
+    llm: Optional[LLMProvider] = None,
+    use_llm: bool = True,
+    rng: Optional[random.Random] = None,
+    out_queue=None,
+):
+    """文字模式 runner：metrics 用真 monotonic；llm 未指定時依 config 建（use_llm=False 強制降級）。"""
+    from .session_runner import TextSessionRunner
+
+    script = build_script(cfg, rng=rng)
+    metrics = MetricsRecorder()  # 真 monotonic（SPEC 第六節絕對時間）
+    if llm is None and use_llm:
+        llm = build_llm(cfg, script.faq_intents())
+    layer4 = build_layer4(cfg, llm)
+    engine = build_engine(cfg, script, metrics, rng=rng, layer4_generator=layer4)
+    pipeline = IntentPipeline(llm=llm)
+    return TextSessionRunner(
+        engine=engine, pipeline=pipeline, metrics=metrics, script=script,
+        store=store, class_id=class_id, session_id=session_id, out_queue=out_queue,
+        **_runner_kwargs(cfg),
+    )
+
+
+def build_voice_runner(
+    cfg: Config,
+    store=None,
+    class_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    *,
+    out_queue=None,
+):
+    """語音模式 runner：組真 STT（spike binary）＋ AudioPlayer（afplay/say）。"""
+    from .audio_player import AudioPlayer
+    from .providers.stt_speechanalyzer import SpeechAnalyzerSTT
+    from .session_runner import VoiceSessionRunner
+
+    script = build_script(cfg)
+    metrics = MetricsRecorder()
+    llm = build_llm(cfg, script.faq_intents())
+    layer4 = build_layer4(cfg, llm)
+    engine = build_engine(cfg, script, metrics, layer4_generator=layer4)
+    pipeline = IntentPipeline(llm=llm)
+    stt = SpeechAnalyzerSTT(
+        helper_path=cfg.stt.helper_path, locale=cfg.stt.stt_locale,
+        silence_ms=cfg.stt.silence_ms, flush_ms=cfg.stt.flush_ms,
+        shutdown_grace_s=cfg.stt.shutdown_grace_s,
+    )
+    player = AudioPlayer(audio_dir=cfg.audio_dir, say_voice=cfg.tts.say_voice, text_lookup=script.text_of)
+    return VoiceSessionRunner(
+        engine=engine, pipeline=pipeline, metrics=metrics, script=script,
+        store=store, class_id=class_id, session_id=session_id,
+        stt=stt, player=player, out_queue=out_queue, **_runner_kwargs(cfg),
+    )

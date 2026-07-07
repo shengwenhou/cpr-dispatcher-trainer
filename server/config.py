@@ -135,6 +135,35 @@ class S6Config:
 
 
 @dataclass
+class ServerConfig:
+    """Web／WebSocket 伺服器與課堂執行期設定（課堂模式階段新增）。
+
+    bind_host / bind_port：uvicorn 綁定位址與埠。預設僅本機（127.0.0.1）；設 0.0.0.0 可讓
+        tailnet 內其他機器的瀏覽器連入。**本檔不寫入任何具體機器名或內網位址**——欲對外綁定
+        由使用者自行以環境變數覆蓋（start.command 會讀取）。
+    web_dir：前端靜態檔目錄（vanilla 單頁，另由前端 worker 產出）；不存在也不影響 server 啟動。
+    data_root：課堂資料落地根目錄（JSONL＋manifest）；預設 repo 內 data/（.gitignore 收錄）。
+    echo_tail_ms：發聲窗尾端緩衝——afplay 結束後仍視為「系統發聲中」的毫秒數，濾殘響 echo。
+    echo_similarity_threshold：非 S6 情境「疑似 echo」的文字相似度門檻（0–1，雙保險用）。
+    tick_interval_ms：VoiceDriver 週期 tick 間隔（驅動 S5 auto-advance／S6 插播／沉默 timeout）。
+    """
+
+    bind_host: str = field(default_factory=lambda: _env("CPR_BIND_HOST", "127.0.0.1"))
+    bind_port: int = field(default_factory=lambda: _env_int("CPR_BIND_PORT", 8000))
+    web_dir: Path = field(
+        default_factory=lambda: Path(_env("CPR_WEB_DIR", str(PROJ_ROOT / "web")))
+    )
+    data_root: Path = field(
+        default_factory=lambda: Path(_env("CPR_DATA_ROOT", str(PROJ_ROOT / "data")))
+    )
+    echo_tail_ms: int = field(default_factory=lambda: _env_int("CPR_ECHO_TAIL_MS", 400))
+    echo_similarity_threshold: float = field(
+        default_factory=lambda: float(_env("CPR_ECHO_SIM_THRESHOLD", "0.75"))
+    )
+    tick_interval_ms: int = field(default_factory=lambda: _env_int("CPR_TICK_MS", 250))
+
+
+@dataclass
 class Config:
     """整體設定聚合。locale 與 scenario 為引擎建構參數（SPEC 八之一：locale 參數化）。"""
 
@@ -149,6 +178,7 @@ class Config:
     timeout: TimeoutConfig = field(default_factory=TimeoutConfig)
     s5: S5Config = field(default_factory=S5Config)
     s6: S6Config = field(default_factory=S6Config)
+    server: ServerConfig = field(default_factory=ServerConfig)
 
     @property
     def script_path(self) -> Path:
