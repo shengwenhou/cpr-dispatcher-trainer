@@ -48,15 +48,28 @@ struct Options {
     var silenceMs: Double = 800
     var useVAD: Bool = true
     var pretty: Bool = false
-    var wavPath: String? = nil   // --wav：從 WAV 檔餵同一條 analyzer 管線（繞過麥克風）
-    var flushMs: Double = 700    // 週期 finalize 間隔毫秒：即使沒有靜音也定期 flush，
-                                 // 讓連續語音（如壓胸數數）能持續吐出 volatile/final
+    var wavPath: String? = nil   // --wav / --wav-realtime：從 WAV 檔餵同一條 analyzer 管線（繞過麥克風）
+    var flushMs: Double = 2000   // 週期 finalize「安全網」間隔毫秒（見 runFlushSafetyNet）：
+                                 // 距上次 finalize 達此值且有新音訊才補刀。VAD 靜音斷句為主，
+                                 // 此值只界定「連續語音（如壓胸數數）無自然斷點時的最壞延遲上限」。
+                                 // 從舊預設 700ms（無條件 metronome，會把對話句切成碎片）上調。
     var dumpAudioPath: String? = nil // --dump-audio：把實際餵進 analyzer 的音訊同步存 WAV
 
+    // ---- --wav-realtime 專屬（無麥克風複現 live 時序行為用）----
+    var chunkMs: Double = 100         // 每塊音訊毫秒（realtime 餵入粒度）
+    var rtSpeed: Double = 1.0         // 餵入速率倍率（1.0=真實時；>1 加速餵、<1 放慢）
+    var rtSleep: Bool = true          // 塊間是否 sleep（--no-rt-sleep 可測「快餵＋週期 finalize」）
+    var tailWaitS: Double = 10.0      // 餵完後保持 analyzer 開啟秒數（模擬 live 持續狀態）
+    var tailSilence: Bool = true      // 尾段是否持續餵靜音（模擬 mic 不停送靜音、游標續進）
+    var useBufferStartTime = false    // AnalyzerInput 是否帶 bufferStartTime（時間軸歧義假說測試）
+    var useFastResults = false        // reportingOptions 是否加入 .fastResults（延遲交付假說測試）
+    var deliveryDiag = false          // 每筆 result 附交付診斷（wall-clock / range / finalizationTime）到 stderr
+
     enum Mode {
-        case check   // --check：印資產與 locale 狀態，必要時觸發下載
-        case live    // 預設：麥克風即時轉寫
-        case wav     // --wav：從檔案餵，分離驗證 / 回歸測試
+        case check       // --check：印資產與 locale 狀態，必要時觸發下載
+        case live        // 預設：麥克風即時轉寫
+        case wav         // --wav：從檔案全速餵，分離驗證 / 回歸測試
+        case wavRealtime // --wav-realtime：從檔案以真實速率餵 + 週期 finalize（複現 live 時序）
     }
 
     static func parse(_ args: [String]) -> Options {
@@ -70,6 +83,30 @@ struct Options {
             case "--wav":
                 i += 1
                 if i < a.count { o.wavPath = a[i]; o.mode = .wav }
+            case "--wav-realtime":
+                i += 1
+                if i < a.count {
+                    o.wavPath = a[i]
+                    o.mode = .wavRealtime
+                    o.deliveryDiag = true // 此模式預設開啟逐筆交付診斷（走 stderr）
+                }
+            case "--chunk-ms":
+                i += 1
+                if i < a.count, let v = Double(a[i]) { o.chunkMs = v }
+            case "--rt-speed":
+                i += 1
+                if i < a.count, let v = Double(a[i]), v > 0 { o.rtSpeed = v }
+            case "--no-rt-sleep":
+                o.rtSleep = false
+            case "--tail-wait-s":
+                i += 1
+                if i < a.count, let v = Double(a[i]) { o.tailWaitS = v }
+            case "--no-tail-silence":
+                o.tailSilence = false
+            case "--buffer-start-time":
+                o.useBufferStartTime = true
+            case "--fast-results":
+                o.useFastResults = true
             case "--locale":
                 i += 1
                 if i < a.count { o.localeID = a[i] }
@@ -106,13 +143,25 @@ func printUsage() {
       （預設）           live 模式：麥克風擷取 → 即時轉寫 → stdout 輸出事件
       --check            印出 SpeechTranscriber 的 supportedLocales / installedLocales、
                          指定 locale 資產狀態；若未安裝則觸發下載到完成後退出
-      --wav <path>       從 WAV 檔餵同一條 analyzer 管線（繞過麥克風），做分離驗證/回歸測試
+      --wav <path>       從 WAV 檔全速餵同一條 analyzer 管線（繞過麥克風），做分離驗證/回歸測試
+      --wav-realtime <p> 從 WAV 檔以「真實速率」餵 + 週期 finalize + VAD + 診斷（複現 live 時序，無麥克風）
+
+    --wav-realtime 專屬選項（用於隔離變因的對照實驗）：
+      --chunk-ms <n>     每塊音訊毫秒（預設 100）
+      --rt-speed <x>     餵入速率倍率（預設 1.0=真實時；>1 加速、<1 放慢）
+      --no-rt-sleep      關掉塊間 sleep（測「快餵＋週期 finalize」）
+      --flush-ms 0       停用週期 finalize（只靠收尾 finalize；隔離「週期 finalize」變因）
+      --tail-wait-s <n>  餵完後保持 analyzer 開啟秒數（預設 10，模擬 live 持續狀態）
+      --no-tail-silence  尾段不餵靜音（預設會餵靜音讓游標續進，忠實對應 mic 不停）
+      --buffer-start-time  AnalyzerInput 帶明確 bufferStartTime（測時間軸歧義假說）
+      --fast-results     reportingOptions 加入 .fastResults（測 final 交付延遲假說）
 
     選項：
       --locale <id>      轉寫語言（預設 zh_TW；SPEC i18n 紀律要求參數化）
       --silence-ms <n>   自製 VAD 靜音門檻毫秒（預設 800）：靜音超過門檻即語義斷句
-      --flush-ms <n>     週期 finalize 間隔毫秒（預設 700）：即使無靜音也定期 flush，
-                         讓連續語音（壓胸數數）持續吐出結果。這是「餵音訊卻 0 事件」的解方
+      --flush-ms <n>     週期 finalize「安全網」間隔毫秒（預設 2000）：距上次 finalize
+                         達此值且有新音訊才補刀。VAD 靜音斷句為主，此值只界定連續語音
+                         （壓胸數數）無自然斷點時的最壞延遲上限。設 0 則純靠 VAD＋收尾 finalize
       --no-vad           關閉自製 VAD 的靜音斷句（週期 flush 仍運作，只是少了語義端點）
       --dump-audio <path> live 模式下，把「實際餵進 analyzer 的音訊」同步存成 WAV
                          （16kHz Int16 mono）。失敗時可用此檔以 --wav 回餵離線復現
@@ -423,6 +472,11 @@ final class STTRunner: @unchecked Sendable {
     // 且能反映該週期是否真的有語音（第 6 點：原本只記最近一塊，時點不對又易漏峰值）。
     private var rmsPeakThisPeriod: Float = 0   // 本週期 tap buffer RMS 峰值
     private var rmsSampleCount = 0             // 本週期取樣了幾塊（0 = 這 2 秒沒有任何 tap）
+    // ---- results 交付診斷（區分「已 commit 未交付」vs「消費者餓死」的關鍵）----
+    // live 27s 凍結現場：finalize 正常返回、volatileRange 前進（analyzer 已 commit），卻只交付 1 筆。
+    // 這兩個計數讓週期診斷能直接顯示「analyzer 消費前進但 results 卻長時間收 0 筆」＝交付端凍結鐵證。
+    private var resultsReceivedCount = 0       // consumeResults 迄今收到的 result 總筆數
+    private var lastResultWallMs: Double = 0   // 上一次收到 result 的牆鐘時間（0=尚未收到任何）
 
     // ---- --dump-audio：把實際餵進 analyzer 的音訊同步寫成 WAV ----
     // 用 AVAudioFile 以 analyzer 期待格式（16kHz Int16 mono）開檔；tap thread 寫入需上鎖。
@@ -452,12 +506,16 @@ final class STTRunner: @unchecked Sendable {
 
         // reportingOptions 開 volatileResults 才拿得到即時（未定稿）結果；
         // attributeOptions 開 audioTimeRange 才能從結果取音訊時間範圍。
+        // --fast-results：額外加入 .fastResults（診斷「final 交付延遲」假說用；預設不開，維持既有行為）。
+        var reporting: Set<SpeechTranscriber.ReportingOption> = [.volatileResults]
+        if opts.useFastResults { reporting.insert(.fastResults) }
         transcriber = SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
-            reportingOptions: [.volatileResults],
+            reportingOptions: reporting,
             attributeOptions: [.audioTimeRange]
         )
+        emitter.status("transcriber reportingOptions：volatileResults\(opts.useFastResults ? " + fastResults" : "")")
 
         // 確認 locale 資產已安裝；未安裝則提示（下載由 --check 負責，此處只警告不阻斷）
         let installed = await SpeechTranscriber.installedLocales
@@ -520,7 +578,11 @@ final class STTRunner: @unchecked Sendable {
 
         // (2) 建立 results 消費 task，並等它確實進入 for-await 才繼續
         let resultsReady = AsyncStream<Void>.makeStream()
-        let resultsTask = Task { [weak self] in
+        // ★ 消費者提升為高優先級：對抗「live 27s 凍結」最可能的機制——結果消費 Task 在 live 進程
+        //   （即時音訊執行緒 + on-device 推論的 CPU 壓力下）被協程排程餓死，導致 analyzer 已 commit
+        //   的 final 遲遲交付不出來。高優先級讓消費者能搶先被排程，不因背景負載而長時間停擺。
+        //   （此為針對 live 的緩解；無麥克風環境的 file-feed 本就不凍結，改動已驗證不影響其輸出。）
+        let resultsTask = Task(priority: .high) { [weak self] in
             guard let self else { return }
             await self.consumeResults(readyContinuation: resultsReady.continuation)
         }
@@ -542,16 +604,12 @@ final class STTRunner: @unchecked Sendable {
             }
         }
 
-        // 週期 finalize Task：SpeechAnalyzer 是「finalize 才 flush」模型，不論有無靜音，
-        // 每 flushMs 對目前游標 finalize 一次，讓連續語音也持續吐出結果。
-        let flushNs = UInt64(max(opts.flushMs, 100) * 1_000_000)
+        // 週期 finalize「安全網」Task：SpeechAnalyzer 是「finalize 才 flush」模型。
+        // 改用 VAD 抑制的安全網（見 runFlushSafetyNet 說明）——VAD 在真實靜音邊界定稿為主，
+        // 安全網只在連續語音長時間無自然斷點時兜底，避免原本 metronome 把對話句切成碎片。
         let flushTask = Task { [weak self] in
             guard let self else { return }
-            while !Task.isCancelled && !self.stopRequested {
-                try? await Task.sleep(nanoseconds: flushNs)
-                if Task.isCancelled || self.stopRequested { break }
-                await self.periodicFinalize()
-            }
+            await self.runFlushSafetyNet()
         }
 
         // --dump-audio：開檔以 analyzerFormat 落地為 WAV
@@ -592,6 +650,8 @@ final class STTRunner: @unchecked Sendable {
     private var finalizeSeq = 0                    // 已發出的 finalize 次數（診斷）
     private var finalizeSkipCount = 0              // in-flight 造成的連續 skip（卡死偵測）
     private var finalizeLastThroughSec: Double = 0 // 最後一次 finalize 的 through 秒數（診斷）
+    private var lastFinalizeAtWall: Double = 0     // 上一次成功 finalize 的牆鐘時間（VAD 或安全網皆更新）
+                                                   // ——安全網據此判斷「距上次 finalize 是否已達 flushMs」
 
     /// 週期 flush：對目前音訊游標 finalize(through:)，讓 analyzer 吐出累積結果。
     /// 不中止串流（後續音訊照常轉寫）。有新音訊才做，避免對同一位置重複 finalize。
@@ -640,7 +700,47 @@ final class STTRunner: @unchecked Sendable {
         finalizeLock.lock()
         finalizeInFlight = false
         lastFinalizedCursor = cursor
+        lastFinalizeAtWall = MonoClock.nowMs() // 記錄本次 finalize 完成時刻，供安全網抑制冗餘 finalize
         finalizeLock.unlock()
+    }
+
+    /// 週期 finalize「安全網」（取代原本的固定間隔 metronome）。
+    ///
+    /// 設計轉變的根因：原本每 flushMs 無條件 finalize(through:)，在「連續語音、無自然靜音」
+    /// （壓胸數數、慌亂連講）時可接受，但套到「有停頓的對話」上，會在句子講到一半就硬切，
+    /// 迫使 analyzer 在缺乏後文脈絡時定稿 → 產出單字碎片甚至誤字（實測 700ms 把整段報案
+    /// 切成「是天才相」「租車」等無用碎片；且中途硬切會丟失原本 VAD 在真實靜音切能保住的內容）。
+    ///
+    /// 新語意：安全網只在「距上一次任何 finalize（VAD 靜音斷句或前一次安全網）已達 flushMs」
+    /// 時才補一刀。效果：
+    ///   1. VAD 在真實靜音邊界的 finalize 成為主力 → 完整、保內容的句子。
+    ///   2. 安全網只在持續語音長時間沒有自然斷點時兜底 → 把最壞延遲限制在 flushMs 內
+    ///      （數數等連續語音仍能定期吐出、被偵測），同時大幅降低對 analyzer 的 finalize 壓力。
+    /// flushMs<=0 則完全停用安全網（純 VAD + 收尾 finalize）。
+    private func runFlushSafetyNet() async {
+        let flushMs = opts.flushMs
+        if flushMs <= 0 {
+            emitter.status("週期 finalize 安全網已停用（flush-ms<=0）：僅靠 VAD 靜音斷句與收尾 finalize。")
+            return
+        }
+        emitter.status("週期 finalize 安全網啟用：距上次 finalize 達 \(Int(flushMs))ms 且有新音訊才補刀（VAD 為主）。")
+        // 起始基準設為現在，讓「開場第一句」有機會先由 VAD 在其自然停頓定稿，而非被安全網提前切斷
+        finalizeLock.lock()
+        lastFinalizeAtWall = MonoClock.nowMs()
+        finalizeLock.unlock()
+        // 以較短輪詢間隔檢查「距上次 finalize 是否已超過 flushMs」（不再是固定間隔硬切）
+        let pollNs: UInt64 = 200_000_000
+        while !Task.isCancelled && !stopRequested {
+            try? await Task.sleep(nanoseconds: pollNs)
+            if Task.isCancelled || stopRequested { break }
+            let now = MonoClock.nowMs()
+            finalizeLock.lock()
+            let since = now - lastFinalizeAtWall
+            finalizeLock.unlock()
+            if since >= flushMs {
+                await periodicFinalize()
+            }
+        }
     }
 
     /// 判斷兩個音訊格式是否「完全等價」（取樣率 + 位元深度 + 聲道數）。
@@ -668,6 +768,8 @@ final class STTRunner: @unchecked Sendable {
         let yields = yieldCount
         let rmsPeak = rmsPeakThisPeriod
         let rmsSamples = rmsSampleCount
+        let recvCount = resultsReceivedCount
+        let lastRecv = lastResultWallMs
         // 讀完即重置本週期 RMS 統計，讓下次心跳反映的是「這 2 秒」的峰值
         rmsPeakThisPeriod = 0
         rmsSampleCount = 0
@@ -687,8 +789,17 @@ final class STTRunner: @unchecked Sendable {
         let fedSec = Double(frames) / (analyzerFormat?.sampleRate ?? 16000)
         // rmsSamples==0 表示這 2 秒完全沒有 tap buffer 進來（tap 停了）——與「有 tap 但很安靜」不同
         let rmsDesc = rmsSamples == 0 ? "無tap" : String(format: "%.4f(峰/%d塊)", rmsPeak, rmsSamples)
-        emitter.status(String(format: "診斷：tap %d 塊 / yield %d 塊 %d frames(≈%.1fs) / RMS %@ / analyzer 消費(volatileRange)=%@",
-                              taps, yields, frames, fedSec, rmsDesc, consumedDesc))
+        // results 交付狀態：收到筆數 + 距上次收到秒數。若 analyzer 消費(volatileRange)持續前進、
+        // 但此處 recv 長時間不動 → 就是「已 commit 未交付／消費者餓死」的凍結鐵證。
+        let recvDesc: String
+        if recvCount == 0 {
+            recvDesc = "0筆(尚未交付任何 result！)"
+        } else {
+            let sinceLast = (MonoClock.nowMs() - lastRecv) / 1000.0
+            recvDesc = String(format: "%d筆(距上次%.1fs)", recvCount, sinceLast)
+        }
+        emitter.status(String(format: "診斷：tap %d 塊 / yield %d 塊 %d frames(≈%.1fs) / RMS %@ / analyzer 消費(volatileRange)=%@ / results 交付=%@",
+                              taps, yields, frames, fedSec, rmsDesc, consumedDesc, recvDesc))
     }
 
     /// tap callback：計算 VAD、轉換格式、推進音訊游標、丟入 analyzer 串流。
@@ -805,6 +916,11 @@ final class STTRunner: @unchecked Sendable {
 
     /// 推進游標、更新診斷計數、（若啟用）寫入 dump WAV 並 yield 給 analyzer。
     private func feedToAnalyzer(_ outBuffer: AVAudioPCMBuffer) {
+        // 先取「本塊起始」游標（推進前），供 bufferStartTime 使用
+        cursorLock.lock()
+        let startCursor = audioSampleCursor
+        cursorLock.unlock()
+
         advanceCursor(by: AVAudioFramePosition(outBuffer.frameLength))
         diagLock.lock()
         convertedFrameTotal += Int(outBuffer.frameLength)
@@ -814,7 +930,14 @@ final class STTRunner: @unchecked Sendable {
         // --dump-audio：把「餵給 analyzer 的同一塊 buffer」寫進 WAV（tap thread，需上鎖）
         writeDump(outBuffer)
 
-        inputContinuation?.yield(AnalyzerInput(buffer: outBuffer))
+        // --buffer-start-time：帶明確 bufferStartTime（以 analyzer 取樣率的樣本游標為時間軸）。
+        // 預設不帶（既有行為）：讓 SDK 以輸入累計時長自行推算時間軸。
+        if opts.useBufferStartTime {
+            let startTime = CMTime(value: startCursor, timescale: CMTimeScale(analyzerFormat.sampleRate))
+            inputContinuation?.yield(AnalyzerInput(buffer: outBuffer, bufferStartTime: startTime))
+        } else {
+            inputContinuation?.yield(AnalyzerInput(buffer: outBuffer))
+        }
     }
 
     /// 開啟 dump WAV 檔（以 analyzerFormat = 16kHz Int16 mono 落地）。
@@ -918,6 +1041,118 @@ final class STTRunner: @unchecked Sendable {
         emitter.status("--wav 完成。")
     }
 
+    /// --wav-realtime 模式：讀 WAV 檔但以「真實速率」餵（每塊 chunkMs 音訊、餵後 sleep chunkMs/rtSpeed），
+    /// 並啟動與 live 模式**完全相同**的週期 finalize（flushMs）＋ VAD ＋ 週期診斷（不裝 tap、不碰麥克風）。
+    /// 餵完後保持 analyzer 開啟 tailWaitS 秒（可選持續餵靜音，模擬 mic 不停送、游標續進），才收尾。
+    /// 目的：在無麥克風環境重現 live 的時序行為，隔離「realtime 餵入 + 週期 finalize」這組變因。
+    func runWavRealtime(path: String) async throws {
+        let url = URL(fileURLWithPath: path)
+        let file = try AVAudioFile(forReading: url)
+        let srcFormat = file.processingFormat
+        let totalSec = Double(file.length) / srcFormat.sampleRate
+        emitter.status("讀入 WAV（realtime）：\(path)")
+        emitter.status("WAV 格式：\(srcFormat.sampleRate)Hz, \(srcFormat.channelCount)ch, commonFormat=\(srcFormat.commonFormat.rawValue)，長度 \(file.length) frames（≈\(String(format: "%.1f", totalSec))s）")
+        emitter.status("realtime 參數：chunk=\(Int(opts.chunkMs))ms speed=\(opts.rtSpeed)x sleep=\(opts.rtSleep) flush=\(Int(opts.flushMs))ms VAD=\(opts.useVAD ? "on(\(Int(opts.silenceMs))ms)" : "off") tailWait=\(opts.tailWaitS)s tailSilence=\(opts.tailSilence) bufferStartTime=\(opts.useBufferStartTime) fastResults=\(opts.useFastResults)")
+
+        // 建立輸入串流
+        let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+        self.inputContinuation = continuation
+
+        // ── 沿用 live 的嚴格啟動順序鎖（不可動）：analyzer.start → results 就緒 → 才餵音訊 ──
+        // (1) 先啟動 analyzer（此時尚無音訊流入）
+        try await analyzer.start(inputSequence: stream)
+        emitter.status("analyzer.start 已返回（SDK 內部通道就緒）")
+
+        // (2) 建立 results 消費 task，等它確實進入 for-await 才繼續
+        let resultsReady = AsyncStream<Void>.makeStream()
+        // ★ 消費者提升為高優先級：對抗「live 27s 凍結」最可能的機制——結果消費 Task 在 live 進程
+        //   （即時音訊執行緒 + on-device 推論的 CPU 壓力下）被協程排程餓死，導致 analyzer 已 commit
+        //   的 final 遲遲交付不出來。高優先級讓消費者能搶先被排程，不因背景負載而長時間停擺。
+        //   （此為針對 live 的緩解；無麥克風環境的 file-feed 本就不凍結，改動已驗證不影響其輸出。）
+        let resultsTask = Task(priority: .high) { [weak self] in
+            guard let self else { return }
+            await self.consumeResults(readyContinuation: resultsReady.continuation)
+        }
+        await withTaskGroup(of: Void.self) { g in
+            g.addTask { var it = resultsReady.stream.makeAsyncIterator(); _ = await it.next() }
+            g.addTask { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+            _ = await g.next()
+            g.cancelAll()
+        }
+
+        // 週期診斷 task（2s，與 live 相同）
+        let diagTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if Task.isCancelled { break }
+                await self.emitPeriodicDiag()
+            }
+        }
+
+        // 週期 finalize「安全網」task（與 live 相同機制）：VAD 抑制的安全網，見 runFlushSafetyNet。
+        // --flush-ms 0 則 runFlushSafetyNet 內部自行停用（純 VAD + 收尾 finalize）。
+        let flushTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runFlushSafetyNet()
+        }
+
+        // (3) 消費者就緒後，才以真實速率餵音訊
+        let chunkFrames = AVAudioFrameCount(max(srcFormat.sampleRate * opts.chunkMs / 1000.0, 1))
+        let sleepNs = UInt64(max(opts.chunkMs / opts.rtSpeed, 0) * 1_000_000)
+        var chunks = 0
+        while file.framePosition < file.length {
+            guard let inBuf = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: chunkFrames) else { break }
+            try file.read(into: inBuf)
+            if inBuf.frameLength == 0 { break }
+            // VAD 靜音端點（與 live handleTap 相同邏輯）：來源塊 RMS 跨靜音門檻即 finalize
+            if let vad = vad {
+                let rms = SilenceVAD.rms(of: inBuf)
+                if vad.feed(rms: rms, nowMs: MonoClock.nowMs()) {
+                    emitter.endpoint(reason: "vad_silence", tWall: MonoClock.nowMs())
+                    Task { [weak self] in await self?.periodicFinalize() }
+                }
+            }
+            guard let outBuf = convertIfNeeded(inBuf) else { break }
+            feedToAnalyzer(outBuf)
+            chunks += 1
+            if opts.rtSleep && sleepNs > 0 { try? await Task.sleep(nanoseconds: sleepNs) }
+        }
+        emitter.status("真實速率餵畢，共餵 \(chunks) 塊；保持 analyzer 開啟 \(opts.tailWaitS)s（tailSilence=\(opts.tailSilence)）…")
+
+        // 尾段：模擬 live 持續狀態。tailSilence 開 → 持續餵靜音塊（游標續進、週期 finalize 續跑），
+        // 這才忠實對應「mic 不會停、講完後仍源源送靜音」的真實 live 情境。
+        let tailChunks = Int(opts.tailWaitS * 1000.0 / max(opts.chunkMs, 1))
+        for _ in 0..<max(tailChunks, 0) {
+            if opts.tailSilence {
+                if let sil = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: chunkFrames) {
+                    sil.frameLength = chunkFrames
+                    // AVAudioPCMBuffer 配置後內容未定，需清 0 才是真靜音
+                    if let ch = sil.floatChannelData {
+                        for c in 0..<Int(srcFormat.channelCount) {
+                            memset(ch[c], 0, Int(chunkFrames) * MemoryLayout<Float>.size)
+                        }
+                    }
+                    if let outSil = convertIfNeeded(sil) { feedToAnalyzer(outSil) }
+                }
+            }
+            if opts.rtSleep && sleepNs > 0 {
+                try? await Task.sleep(nanoseconds: sleepNs)
+            } else {
+                try? await Task.sleep(nanoseconds: UInt64(opts.chunkMs * 1_000_000))
+            }
+        }
+
+        emitter.status("尾段結束，收尾 finalizeAndFinishThroughEndOfInput…")
+        flushTask.cancel()
+        diagTask.cancel()
+        continuation.finish()
+        try await analyzer.finalizeAndFinishThroughEndOfInput()
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        resultsTask.cancel()
+        emitter.status("--wav-realtime 完成。")
+    }
+
     private func advanceCursor(by frames: AVAudioFramePosition) {
         cursorLock.lock()
         audioSampleCursor += frames
@@ -952,6 +1187,10 @@ final class STTRunner: @unchecked Sendable {
                     emitter.status("results：收到第 1 筆 result（消費迴圈確實在運行）")
                 }
                 let now = MonoClock.nowMs()
+                diagLock.lock()
+                resultsReceivedCount += 1
+                lastResultWallMs = now
+                diagLock.unlock()
                 let text = String(result.text.characters)
 
                 // 從結果的音訊時間範圍取 audio_start / audio_end（秒）
@@ -959,6 +1198,21 @@ final class STTRunner: @unchecked Sendable {
                 let audioStart = range.start.seconds.isFinite ? range.start.seconds : 0
                 let audioEnd = (range.start + range.duration).seconds
                 let audioEndVal = audioEnd.isFinite ? audioEnd : audioStart
+
+                // 逐筆交付診斷（--wav-realtime 預設開啟）：把「這筆 result 在牆鐘幾秒送達消費端、
+                // 對應音訊哪一段、SDK 標的 resultsFinalizationTime」全印出來，才能精準定位
+                // 「音訊段結束 → final 送達」的真實延遲，以及 volatile/final 交付是否被卡住。
+                if opts.deliveryDiag {
+                    let rft = result.resultsFinalizationTime.seconds
+                    let rftDesc = rft.isFinite ? String(format: "%.2f", rft) : "n/a"
+                    // 以當前音訊游標秒數當「即時前緣」，估算此段音訊講完到現在過了多久
+                    cursorLock.lock()
+                    let curSec = analyzerFormat != nil ? Double(audioSampleCursor) / analyzerFormat.sampleRate : 0
+                    cursorLock.unlock()
+                    let lag = (curSec - audioEndVal) * 1000.0
+                    emitter.status(String(format: "交付：%@ @wall %.0fms | 音訊段 %.2f–%.2fs | 前緣落後 %.0fms | rft=%@s | 「%@」",
+                                          result.isFinal ? "FINAL " : "volat.", now, audioStart, audioEndVal, lag, rftDesc, text))
+                }
 
                 if result.isFinal {
                     // volatile→final 延遲：距同段最後一次 volatile 的時間差
@@ -1160,6 +1414,21 @@ struct STTSpike {
                 exit(0)
             } catch {
                 emitter.status("--wav 模式錯誤：\(error)")
+                exit(1)
+            }
+
+        case .wavRealtime:
+            guard let path = opts.wavPath else {
+                emitter.status("--wav-realtime 需要檔案路徑")
+                exit(2)
+            }
+            let runner = STTRunner(opts: opts, emitter: emitter)
+            do {
+                try await runner.setup()
+                try await runner.runWavRealtime(path: path)
+                exit(0)
+            } catch {
+                emitter.status("--wav-realtime 模式錯誤：\(error)")
                 exit(1)
             }
 

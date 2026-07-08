@@ -49,7 +49,7 @@ class STTConfig:
     # SDK locale 用底線格式（zh_TW）；與台詞庫／資產的連字號 locale（zh-TW）分開，避免混用。
     stt_locale: str = field(default_factory=lambda: _env("CPR_STT_LOCALE", "zh_TW"))
     silence_ms: int = field(default_factory=lambda: _env_int("CPR_STT_SILENCE_MS", 600))
-    flush_ms: int = field(default_factory=lambda: _env_int("CPR_STT_FLUSH_MS", 700))
+    flush_ms: int = field(default_factory=lambda: _env_int("CPR_STT_FLUSH_MS", 2000))
     # 收到 SIGINT 後等 helper 自行收尾的秒數（spike 內建 3s 硬退出，這裡給 5s 裕度後才 SIGKILL）
     shutdown_grace_s: float = 5.0
     # 診斷開關：非空時把每場 analyzer 實際收到的音訊 dump 到此目錄（WAV，檔名帶時間戳），
