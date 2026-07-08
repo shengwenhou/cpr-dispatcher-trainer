@@ -142,3 +142,7 @@
 2. **STT helper 兩種死法**：(a) tap 以啟動前查詢的 hwFormat 宣告，route 不符即 crash——改 `installTap(format: nil)`，`--wav` 回歸通過；(b) 系統**無輸入裝置**時 engine.start 以 -10868 失敗（Mac mini 無內建麥，DJI 未被認到＝零聲源），helper 正確走層 5 技術故障。首測「活著零輸出」最可能是 DJI 掛著但未進音。
 3. **診斷盲區已補**：STT helper stderr 全量落地事件流（`stt_status`：授權、格式、每 2 秒音訊塊數與 RMS 峰值）——下輪實測若再異常，事件流直接可判。
 4. 待辦不變：真語音全流程 S0→S7（實測前**必查系統聲音輸入選 DJI 且音量條有動**，指引已更新）。
+
+### 2026-07-08 補記二 — STT live 堵塞根因與修法（第二、三輪實測循環）
+
+實測「講很多只辨識一筆、延遲 26 秒」確診為兩問題（詳 commit）：(1) 週期 finalize metronome 硬切致碎片化＋丟內容——改 VAD 為主＋2s 安全網（`CPR_STT_FLUSH_MS` 預設 2000，數數偵測最壞延遲＝此值，S6 若需更快可調小）；(2) live 管線 results 消費者餓死（file-feed 不可複現）——高優先級緩解＋「results 交付」診斷儀器，待真麥克風驗收。**排錯方法論沉澱：spike 新增 `--wav-realtime`（實測 dump 音訊以真實速率回放）——live 時序 bug 從此可離線複現迭代，不需佔用維護者麥克風場。**同輪亦修：緊急中止撕斷播放鏈致「說話中」指示與邏輯時鐘永久掛起（_speak 改 finally 保證收尾＋播放 30s 上限）。
