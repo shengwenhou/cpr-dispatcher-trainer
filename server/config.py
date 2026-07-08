@@ -52,6 +52,9 @@ class STTConfig:
     flush_ms: int = field(default_factory=lambda: _env_int("CPR_STT_FLUSH_MS", 700))
     # 收到 SIGINT 後等 helper 自行收尾的秒數（spike 內建 3s 硬退出，這裡給 5s 裕度後才 SIGKILL）
     shutdown_grace_s: float = 5.0
+    # 診斷開關：非空時把每場 analyzer 實際收到的音訊 dump 到此目錄（WAV，檔名帶時間戳），
+    # 供 --wav 回餵驗證轉換品質。開發者排查用，平時留空。logs/ 已在 gitignore。
+    dump_dir: str = field(default_factory=lambda: _env("CPR_STT_DUMP_DIR", ""))
 
 
 @dataclass

@@ -6,6 +6,7 @@ harness 與 app 都用它，避免組裝邏輯散落。
 from __future__ import annotations
 
 import random
+from pathlib import Path
 from typing import Callable, Optional
 
 from .config import Config, load_config
@@ -160,11 +161,16 @@ def build_voice_runner(
     layer4 = build_layer4(cfg, llm)
     engine = build_engine(cfg, script, metrics, layer4_generator=layer4)
     pipeline = IntentPipeline(llm=llm)
+    # CPR_STT_DUMP_DIR 非空時，把每場 analyzer 實際收到的音訊落地（診斷用；檔名帶場次 id）
+    dump_path = None
+    if cfg.stt.dump_dir:
+        dump_path = Path(cfg.stt.dump_dir) / f"stt_dump_{session_id or 'unknown'}.wav"
     stt = SpeechAnalyzerSTT(
         helper_path=cfg.stt.helper_path, locale=cfg.stt.stt_locale,
         silence_ms=cfg.stt.silence_ms, flush_ms=cfg.stt.flush_ms,
         shutdown_grace_s=cfg.stt.shutdown_grace_s,
         emit_status=True,  # helper stderr 診斷轉 STATUS 事件（runner 落地存證，排查 STT 無事件用）
+        dump_path=dump_path,
     )
     player = AudioPlayer(audio_dir=cfg.audio_dir, say_voice=cfg.tts.say_voice, text_lookup=script.text_of)
     return VoiceSessionRunner(

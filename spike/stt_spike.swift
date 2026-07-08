@@ -589,6 +589,9 @@ final class STTRunner: @unchecked Sendable {
     private let finalizeLock = NSLock()
     private var finalizeInFlight = false
     private var lastFinalizedCursor: AVAudioFramePosition = 0
+    private var finalizeSeq = 0                    // 已發出的 finalize 次數（診斷）
+    private var finalizeSkipCount = 0              // in-flight 造成的連續 skip（卡死偵測）
+    private var finalizeLastThroughSec: Double = 0 // 最後一次 finalize 的 through 秒數（診斷）
 
     /// 週期 flush：對目前音訊游標 finalize(through:)，讓 analyzer 吐出累積結果。
     /// 不中止串流（後續音訊照常轉寫）。有新音訊才做，避免對同一位置重複 finalize。
@@ -602,17 +605,37 @@ final class STTRunner: @unchecked Sendable {
         let already = finalizeInFlight
         let last = lastFinalizedCursor
         if already || cursor <= last {
+            // 診斷「finalize 卡死」假說的關鍵訊號：若 in-flight 造成的 skip 連續累積，
+            // 表示上一次 finalize 的 await 從未返回（analyzer 靜默卡死，不拋錯）。
+            if already {
+                finalizeSkipCount += 1
+                if finalizeSkipCount == 3 || finalizeSkipCount % 20 == 0 {
+                    emitter.status("⚠ 週期 finalize 已連續 skip \(finalizeSkipCount) 次：上一次 finalize（#\(finalizeSeq)，through=\(String(format: "%.2f", finalizeLastThroughSec))s）之 await 尚未返回——疑似 analyzer finalize 卡死。")
+                }
+            }
             finalizeLock.unlock()
             return
         }
         finalizeInFlight = true
+        finalizeSkipCount = 0
+        finalizeSeq += 1
+        let seq = finalizeSeq
+        finalizeLastThroughSec = Double(cursor) / analyzerFormat.sampleRate
         finalizeLock.unlock()
 
+        // 前 5 次逐次記錄、之後每 10 次一記（節流；卡死時「開始」有記而「完成」缺席即為鐵證）
+        let verbose = seq <= 5 || seq % 10 == 0
+        if verbose {
+            emitter.status("週期 finalize #\(seq) 開始（through=\(String(format: "%.2f", finalizeLastThroughSec))s）")
+        }
         let through = CMTime(value: cursor, timescale: CMTimeScale(analyzerFormat.sampleRate))
         do {
             try await analyzer?.finalize(through: through)
+            if verbose {
+                emitter.status("週期 finalize #\(seq) 完成")
+            }
         } catch {
-            emitter.status("週期 finalize 失敗：\(error.localizedDescription)")
+            emitter.status("週期 finalize #\(seq) 失敗：\(error.localizedDescription)")
         }
         finalizeLock.lock()
         finalizeInFlight = false

@@ -34,6 +34,7 @@ class SpeechAnalyzerSTT(STTProvider):
         flush_ms: int = 700,
         shutdown_grace_s: float = 5.0,
         emit_status: bool = False,
+        dump_path: Optional[Path] = None,
     ) -> None:
         self.helper_path = Path(helper_path)
         self.locale = locale
@@ -41,6 +42,8 @@ class SpeechAnalyzerSTT(STTProvider):
         self.flush_ms = flush_ms
         self.shutdown_grace_s = shutdown_grace_s
         self.emit_status = emit_status
+        # 診斷用：把 analyzer 實際收到的音訊落地 WAV（--dump-audio），事後可 --wav 回餵驗證轉換品質
+        self.dump_path = Path(dump_path) if dump_path else None
 
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._queue: asyncio.Queue[Optional[STTEvent]] = asyncio.Queue()
@@ -64,6 +67,9 @@ class SpeechAnalyzerSTT(STTProvider):
             "--silence-ms", str(self.silence_ms),
             "--flush-ms", str(self.flush_ms),
         ]
+        if self.dump_path is not None:
+            self.dump_path.parent.mkdir(parents=True, exist_ok=True)
+            args += ["--dump-audio", str(self.dump_path)]
         self._proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
