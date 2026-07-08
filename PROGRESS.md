@@ -133,3 +133,12 @@
 
 1. **真語音整測**（需維護者在 mini 本機配合；指引已交付於維護者私有文件區《真語音實測指引》）：DJI Mic 2＋喇叭、全語音 S0→S7、延遲對照 SPEC 第七節（預錄命中 500–800ms）、echo gate 參數調校（CPR_ECHO_TAIL_MS 等）、層 4 存證審核。
 2. 報告輸出（Word／Excel／debriefing dashboard）——資料層已存夠（events.jsonl＋summary），純消費端工作。
+
+### 2026-07-08 補記 — 首輪真語音實測回報修復
+
+維護者首測（DJI）：講話無反應、中止／結束按鈕「沒反應」。查明與修復（commit 0caee35）：
+
+1. **中止／結束其實後端有執行**（meta 已標 aborted），但 `_finalize` 不推 WS，前端不知情。已統一收口：推 `session_aborted`（回開始畫面）／`session_ended`（指標卡）＋存證事件；手動結束語意改標 `ended`。
+2. **STT helper 兩種死法**：(a) tap 以啟動前查詢的 hwFormat 宣告，route 不符即 crash——改 `installTap(format: nil)`，`--wav` 回歸通過；(b) 系統**無輸入裝置**時 engine.start 以 -10868 失敗（Mac mini 無內建麥，DJI 未被認到＝零聲源），helper 正確走層 5 技術故障。首測「活著零輸出」最可能是 DJI 掛著但未進音。
+3. **診斷盲區已補**：STT helper stderr 全量落地事件流（`stt_status`：授權、格式、每 2 秒音訊塊數與 RMS 峰值）——下輪實測若再異常，事件流直接可判。
+4. 待辦不變：真語音全流程 S0→S7（實測前**必查系統聲音輸入選 DJI 且音量條有動**，指引已更新）。
