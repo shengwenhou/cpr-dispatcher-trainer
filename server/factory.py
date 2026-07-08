@@ -164,6 +164,7 @@ def build_voice_runner(
         helper_path=cfg.stt.helper_path, locale=cfg.stt.stt_locale,
         silence_ms=cfg.stt.silence_ms, flush_ms=cfg.stt.flush_ms,
         shutdown_grace_s=cfg.stt.shutdown_grace_s,
+        emit_status=True,  # helper stderr 診斷轉 STATUS 事件（runner 落地存證，排查 STT 無事件用）
     )
     player = AudioPlayer(audio_dir=cfg.audio_dir, say_voice=cfg.tts.say_voice, text_lookup=script.text_of)
     return VoiceSessionRunner(

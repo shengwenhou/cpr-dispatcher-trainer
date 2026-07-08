@@ -40,6 +40,8 @@ class RunnerEventType(str, Enum):
 
     GATE_DROPPED = "gate_dropped"  # half-duplex 丟棄的 STT final（附原句與原因，debriefing 素材）
     TTS_PLAY = "tts_play"          # 實際播放起訖（有別於引擎 system_speak＝「意圖播出」）
+    SESSION_FINALIZED = "session_finalized"  # 手動結束／中止的存證（data.status；自然完成走引擎 SESSION_END）
+    STT_STATUS = "stt_status"      # STT helper 的 stderr 診斷（落地供事後排查，不推前端）
 
 
 # 文字正規化用：比對 echo 相似度前剝除標點與空白。
@@ -284,11 +286,30 @@ class SessionRunner:
             self._finalize("completed")
 
     def _finalize(self, status: str) -> None:
+        """收尾統一收口：存證事件＋落地 meta＋推前端回饋。
+
+        自然完成（completed）的前端回饋由 _drain_metrics 對引擎 SESSION_END 推 session_ended，
+        此處不重複；手動結束（ended）與中止（aborted）沒有引擎事件，必須在這裡補推——
+        否則前端永遠不知道場次已死（實測踩過的坑）。"""
+        if status in ("ended", "aborted"):
+            self.metrics.record(RunnerEventType.SESSION_FINALIZED, status=status)
+            self._drain_metrics()
         if self.store is not None and self.class_id and self.session_id:
             try:
                 self.store.finalize_session(self.class_id, self.session_id, status, self.metrics.summary())
             except Exception:
                 pass
+        if status == "aborted":
+            self._emit(wsp.make(
+                wsp.MsgType.SESSION_ABORTED,
+                payload={"summary": self.metrics.summary()}, session_id=self.session_id,
+            ))
+        elif status == "ended":
+            # 講師提早收場：沿用 session_ended（前端顯示指標卡，未達節點為 null）
+            self._emit(wsp.make(
+                wsp.MsgType.SESSION_ENDED,
+                payload={"summary": self.metrics.summary(), "manual": True}, session_id=self.session_id,
+            ))
 
     async def abort(self) -> None:
         """緊急中止（文字模式：無聲可停）。"""
@@ -302,7 +323,7 @@ class SessionRunner:
             return
         self._stopped = True
         if not self.engine.finished:
-            self._finalize("aborted")
+            self._finalize("ended")  # 講師手動提早收場＝正常結束（非中止）
 
     def snapshot(self) -> dict[str, Any]:
         """從記憶體產生場次快照（斷線重連用；活著的 runner 走此，死掉的走 store.snapshot）。"""
@@ -399,6 +420,11 @@ class VoiceSessionRunner(SessionRunner):
                         payload={"kind": "final", "text": ev.text}, session_id=self.session_id,
                     ))
                     await self.submit_final(ev.text)
+                elif ev.type == STTEventType.STATUS:
+                    # helper 的 stderr 診斷落地事件流（ready／asset／audio 啟動等），
+                    # 不推前端；實測「STT 零事件」的排查全靠這個。
+                    self.metrics.record(RunnerEventType.STT_STATUS, text=ev.text)
+                    self._drain_metrics()
                 elif ev.type == STTEventType.ERROR:
                     await self._on_stt_error(ev.raw)
         except asyncio.CancelledError:
@@ -438,4 +464,4 @@ class VoiceSessionRunner(SessionRunner):
         except Exception:
             pass
         if not self.engine.finished:
-            self._finalize("aborted")
+            self._finalize("ended")  # 講師手動提早收場＝正常結束（非中止）

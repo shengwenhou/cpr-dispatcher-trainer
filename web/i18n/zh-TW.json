@@ -118,6 +118,7 @@
     "session_started": "場次已開始。",
     "session_resumed": "已恢復進行中場次。",
     "session_ended": "場次已結束。",
+    "session_aborted": "場次已緊急中止。",
     "class_ended": "課堂已結束。",
     "send_failed": "訊息尚未送出，請確認連線狀態。",
     "unknown_error": "發生未預期錯誤。",

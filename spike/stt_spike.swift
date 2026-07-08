@@ -560,7 +560,14 @@ final class STTRunner: @unchecked Sendable {
         }
 
         // (3) 消費者就緒後，才安裝 tap + 啟動 engine，讓音訊開始流入
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
+        //
+        // ★ tap format 一律傳 nil（使用 input node 當下的實際格式）：
+        // 以 engine 啟動前查詢的 hwFormat 宣告 tap，遇到「查詢值與實際 route 不符」
+        // （裝置切換後常見，實測 44.1kHz/2ch 內建麥）會直接拋
+        // 'Failed to create tap due to format mismatch' 讓 helper 崩潰。
+        // 本程式本就依每塊 buffer 的實際格式惰性建 converter（見 convertIfNeeded），
+        // 不依賴 tap 宣告格式；hwFormat 僅作診斷比對基準。
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
             guard let self else { return }
             self.handleTap(buffer: buffer, hwFormat: hwFormat)
         }

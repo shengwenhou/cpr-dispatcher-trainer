@@ -266,6 +266,7 @@
       tts_play: handleTtsPlay,
       metric: handleMetric,
       session_ended: handleSessionEnded,
+      session_aborted: handleSessionAborted,
       snapshot: handleSnapshot,
       class_ended: handleClassEnded,
       error: handleError,
@@ -368,6 +369,14 @@
     renderSummary(summary);
     showScreen("summary");
     showToast("messages.session_ended");
+  }
+
+  function handleSessionAborted() {
+    // 緊急中止完成：停錶、清說話指示、回開始畫面（中止場次不顯示指標卡）
+    stopTimer();
+    els.speakingIndicator.hidden = true;
+    prepareNextStudent();
+    showToast("messages.session_aborted");
   }
 
   function handleSnapshot(payload) {

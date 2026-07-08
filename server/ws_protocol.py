@@ -31,6 +31,7 @@ class MsgType(str, Enum):
     TTS_PLAY = "tts_play"              # 台詞播放起訖（event: start/end）
     METRIC = "metric"                  # 原始 metrics 事件串流
     SESSION_ENDED = "session_ended"    # 場次結束＋個人指標推送
+    SESSION_ABORTED = "session_aborted"  # 緊急中止完成回饋（前端據此停錶並返回開始畫面）
     SNAPSHOT = "snapshot"              # resume 回應：重建畫面用快照
     CLASS_ENDED = "class_ended"        # 結課完成（資料就緒）
     ERROR = "error"                    # 錯誤（message_key）
