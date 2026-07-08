@@ -42,6 +42,7 @@ class RunnerEventType(str, Enum):
     TTS_PLAY = "tts_play"          # 實際播放起訖（有別於引擎 system_speak＝「意圖播出」）
     SESSION_FINALIZED = "session_finalized"  # 手動結束／中止的存證（data.status；自然完成走引擎 SESSION_END）
     STT_STATUS = "stt_status"      # STT helper 的 stderr 診斷（落地供事後排查，不推前端）
+    STT_FINAL = "stt_final"        # STT 定稿逐字稿（含音訊座標與延遲；SPEC 第七節延遲分析＋echo 判定）
 
 
 # 文字正規化用：比對 echo 相似度前剝除標點與空白。
@@ -411,13 +412,26 @@ class VoiceSessionRunner(SessionRunner):
                 if ev.type == STTEventType.VOLATILE and ev.text:
                     self._emit(wsp.make(
                         wsp.MsgType.TRANSCRIPT,
-                        payload={"kind": "partial", "text": ev.text}, session_id=self.session_id,
+                        payload={"kind": "partial", "text": ev.text,
+                                 "audio_start": ev.audio_start, "audio_end": ev.audio_end},
+                        session_id=self.session_id,
                     ))
                 elif ev.type == STTEventType.FINAL and ev.text:
-                    # 逐字稿先推（講師看見 STT 聽到什麼），再走 gate/引擎（可能被 gate 丟棄）
+                    # 逐字稿先落地＋推 WS（講師看見 STT 聽到什麼），再走 gate/引擎（可能被 gate 丟棄）。
+                    # audio_start/audio_end 為該段語音在音訊軸上的座標——與 tts_play 起訖比對
+                    # 即可鐵證判定「這筆是不是喇叭 echo」與辨識延遲（final 牆鐘 − audio_end）。
+                    self.metrics.record(
+                        RunnerEventType.STT_FINAL, text=ev.text,
+                        audio_start=ev.audio_start, audio_end=ev.audio_end,
+                        latency_ms=ev.latency_since_audio_end_ms,
+                    )
+                    self._drain_metrics()
                     self._emit(wsp.make(
                         wsp.MsgType.TRANSCRIPT,
-                        payload={"kind": "final", "text": ev.text}, session_id=self.session_id,
+                        payload={"kind": "final", "text": ev.text,
+                                 "audio_start": ev.audio_start, "audio_end": ev.audio_end,
+                                 "latency_ms": ev.latency_since_audio_end_ms},
+                        session_id=self.session_id,
                     ))
                     await self.submit_final(ev.text)
                 elif ev.type == STTEventType.STATUS:
