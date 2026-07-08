@@ -1,0 +1,8 @@
+{
+  "ts_utc": "20260708T073159418816",
+  "utterance": "明天",
+  "question": "你好，這裡是天才消防局，請問你要消防車還是救護車？",
+  "state_context": "",
+  "generated": "沒關係，我們先照著做。",
+  "model": "gemini-2.5-flash-lite"
+}

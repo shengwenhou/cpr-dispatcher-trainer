@@ -381,20 +381,35 @@ class VoiceSessionRunner(SessionRunner):
         for a in actions:
             await self._speak(a)
 
+    # 單句播放上限秒數：預錄句最長 <15s、say 動態句 <10s；超過即視為播放器卡死，
+    # kill 止血——播放與 STT 消費在同一條 await 鏈上，放任卡死會癱瘓整場（實測教訓）。
+    PLAY_TIMEOUT_S = 30.0
+
     async def _speak(self, action: SpeakAction) -> None:
-        """播一句：發聲窗凍結邏輯時鐘 → afplay/say → 記起訖 → 尾端緩衝 → 解除凍結。"""
+        """播一句：發聲窗凍結邏輯時鐘 → afplay/say → 記起訖 → 尾端緩衝 → 解除凍結。
+
+        end 事件與解凍以 finally 保證：緊急中止會 cancel 本協程（await 中拋 CancelledError），
+        若不走 finally，「說話中」指示與凍結的邏輯時鐘會永遠掛著（實測踩過的坑）。
+        echo tail 屬於發聲窗（殘響期間 gate 仍須生效），故 tail 在 finally 解凍之前等。"""
         text = _action_text(action, self.script)
         self._freeze_begin()
         self._emit_tts(action, "start", text)
         try:
-            await self.player.play(action, self.script.text_of if self.script is not None else None)
-        except Exception:
-            pass  # 播放失敗不可中斷對話（缺檔已由 player 退 say）
-        self._emit_tts(action, "end", text)
-        if text:
-            self._last_spoken_text = text
-        await self._tail_wait()
-        self._freeze_end()
+            try:
+                await asyncio.wait_for(
+                    self.player.play(action, self.script.text_of if self.script is not None else None),
+                    timeout=self.PLAY_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                await self.player.kill()  # 播放器卡死：止血，對話繼續
+            except Exception:
+                pass  # 播放失敗不可中斷對話（缺檔已由 player 退 say）；CancelledError 不在此列，照常傳播
+            await self._tail_wait()  # 中止取消時跳過（例外傳播中），直接進 finally 收尾
+        finally:
+            self._emit_tts(action, "end", text)
+            if text:
+                self._last_spoken_text = text
+            self._freeze_end()
 
     async def _tail_wait(self) -> None:
         t = self.echo_tail_ms / 1000.0
