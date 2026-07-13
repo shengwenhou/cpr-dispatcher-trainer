@@ -64,6 +64,11 @@ struct Options {
     var useBufferStartTime = false    // AnalyzerInput 是否帶 bufferStartTime（時間軸歧義假說測試）
     var useFastResults = false        // reportingOptions 是否加入 .fastResults（延遲交付假說測試）
     var deliveryDiag = false          // 每筆 result 附交付診斷（wall-clock / range / finalizationTime）到 stderr
+    var synthFinal = true             // 「volatile 合成 final」fallback（放棄依賴 SDK 的 final 交付）：
+                                      // live 實測 isFinal 全不交付、volatile 正常，故預設開啟；
+                                      // --no-synth-final 可關閉做 A/B（file-feed 下真 final 正常交付時比對）
+    var dropRealFinals = false        // 除錯：丟棄所有真 isFinal（模擬 live「final 不交付」），
+                                      // 讓 file-feed 也能驗證「純靠合成」的段落覆蓋與去重（--drop-real-finals）
 
     enum Mode {
         case check       // --check：印資產與 locale 狀態，必要時觸發下載
@@ -121,6 +126,10 @@ struct Options {
                 if i < a.count { o.dumpAudioPath = a[i] }
             case "--no-vad":
                 o.useVAD = false
+            case "--no-synth-final":
+                o.synthFinal = false
+            case "--drop-real-finals":
+                o.dropRealFinals = true
             case "--pretty":
                 o.pretty = true
             case "-h", "--help":
@@ -155,6 +164,8 @@ func printUsage() {
       --no-tail-silence  尾段不餵靜音（預設會餵靜音讓游標續進，忠實對應 mic 不停）
       --buffer-start-time  AnalyzerInput 帶明確 bufferStartTime（測時間軸歧義假說）
       --fast-results     reportingOptions 加入 .fastResults（測 final 交付延遲假說）
+      --drop-real-finals 除錯：丟棄所有真 isFinal（模擬 live「final 不交付」），
+                         讓 file-feed 也能驗證「純靠 volatile 合成」的段落覆蓋與去重
 
     選項：
       --locale <id>      轉寫語言（預設 zh_TW；SPEC i18n 紀律要求參數化）
@@ -163,6 +174,9 @@ func printUsage() {
                          達此值且有新音訊才補刀。VAD 靜音斷句為主，此值只界定連續語音
                          （壓胸數數）無自然斷點時的最壞延遲上限。設 0 則純靠 VAD＋收尾 finalize
       --no-vad           關閉自製 VAD 的靜音斷句（週期 flush 仍運作，只是少了語義端點）
+      --no-synth-final   關閉「volatile 合成 final」fallback（預設開啟）。live 實測 SDK 的 isFinal
+                         完全不交付、volatile 正常，故 helper 端在 VAD 端點／安全網逾時時以最後
+                         volatile 合成 final（含 "synthesized":true），並對隨後到達的真 final 去重
       --dump-audio <path> live 模式下，把「實際餵進 analyzer 的音訊」同步存成 WAV
                          （16kHz Int16 mono）。失敗時可用此檔以 --wav 回餵離線復現
       --pretty           人類可讀輸出（預設 JSONL，一行一事件）
@@ -187,6 +201,9 @@ func printUsage() {
 final class EventEmitter {
     let pretty: Bool
     private var lastWasVolatile = false
+    // 輸出鎖：合成 final 修法後，final 可能同時來自「results 消費 task」「安全網 task」「tap 執行緒
+    // 的 VAD 端點」三個上下文；此鎖確保每筆 JSONL/pretty 行的寫出不被其他執行緒穿插而破行。
+    private let ioLock = NSLock()
 
     init(pretty: Bool) { self.pretty = pretty }
 
@@ -196,6 +213,7 @@ final class EventEmitter {
     private func jsonLine(_ dict: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
               let s = String(data: data, encoding: .utf8) else { return }
+        ioLock.lock(); defer { ioLock.unlock() }
         print(s)
     }
 
@@ -205,6 +223,7 @@ final class EventEmitter {
         //   2. stdout 在非 tty（背景/重導向）時預設全緩衝，若程式卡在某個 async 呼叫，
         //      緩衝內的 status 會看不到；stderr 行緩衝可即時看到，對排錯（尤其 hang）至關重要。
         if pretty {
+            ioLock.lock(); defer { ioLock.unlock() }
             clearVolatileLineIfNeeded()
             FileHandle.standardError.write("[狀態] \(msg)\n".data(using: .utf8)!)
         } else {
@@ -213,6 +232,7 @@ final class EventEmitter {
                 options: [.sortedKeys]),
                var s = String(data: data, encoding: .utf8) {
                 s += "\n"
+                ioLock.lock(); defer { ioLock.unlock() }
                 FileHandle.standardError.write(s.data(using: .utf8)!)
             }
         }
@@ -220,6 +240,7 @@ final class EventEmitter {
 
     func volatile(text: String, tWall: Double, audioStart: Double, audioEnd: Double) {
         if pretty {
+            ioLock.lock(); defer { ioLock.unlock() }
             // 同行覆寫：\r 回到行首，輸出即時（未定稿）結果
             let line = "  … \(text)"
             FileHandle.standardOutput.write(("\r" + line + "\u{1B}[K").data(using: .utf8)!)
@@ -236,12 +257,15 @@ final class EventEmitter {
     }
 
     func final(text: String, tWall: Double, audioStart: Double, audioEnd: Double,
-               latencySinceLastVolatile: Double?, latencySinceAudioEnd: Double?) {
+               latencySinceLastVolatile: Double?, latencySinceAudioEnd: Double?,
+               synthesized: Bool = false) {
         if pretty {
+            ioLock.lock(); defer { ioLock.unlock() }
             clearVolatileLineIfNeeded()
             let lv = latencySinceLastVolatile.map { " | volatile→final \(ms($0))ms" } ?? ""
             let ae = latencySinceAudioEnd.map { " | audioEnd→final \(ms($0))ms" } ?? ""
-            print("✓ \(text)\(lv)\(ae)")
+            let syn = synthesized ? " [合成]" : ""
+            print("✓\(syn) \(text)\(lv)\(ae)")
         } else {
             var dict: [String: Any] = [
                 "type": "final",
@@ -252,12 +276,15 @@ final class EventEmitter {
             ]
             if let l = latencySinceLastVolatile { dict["latency_since_last_volatile_ms"] = ms(l) }
             if let l = latencySinceAudioEnd { dict["latency_since_audio_end_ms"] = ms(l) }
+            // 只有合成時才加 "synthesized" 欄位：確保既有（真 final）輸出逐位元不變（--wav 回歸）
+            if synthesized { dict["synthesized"] = true }
             jsonLine(dict)
         }
     }
 
     func endpoint(reason: String, tWall: Double) {
         if pretty {
+            ioLock.lock(); defer { ioLock.unlock() }
             clearVolatileLineIfNeeded()
             print("── 斷句（\(reason)）──")
         } else {
@@ -653,6 +680,23 @@ final class STTRunner: @unchecked Sendable {
     private var lastFinalizeAtWall: Double = 0     // 上一次成功 finalize 的牆鐘時間（VAD 或安全網皆更新）
                                                    // ——安全網據此判斷「距上次 finalize 是否已達 flushMs」
 
+    // ---- 「volatile 合成 final」fallback 狀態（跨 results task / tap 執行緒 / 安全網 task，需上鎖）----
+    // 背景：live 實測 SDK 的 isFinal 完全不交付（volatile 正常）。放棄依賴 SDK final，改由 helper
+    // 在段落邊界（VAD 靜音端點、安全網逾時）以「最近一筆 volatile」合成 final，確保「有 volatile 就終究有 final」。
+    private let synthLock = NSLock()
+    private var curVolatileText = ""       // 最近一筆 volatile 的文字（合成內容來源）
+    private var curVolatileStart = 0.0     // 最近 volatile 的 audio_start（秒）
+    private var curVolatileEnd = 0.0       // 最近 volatile 的 audio_end（秒）
+    private var lastEmittedEnd = -1.0      // 已（合成或真）吐出 final 的最後 audio 秒——去重水位
+    private var lastEmittedAtWall = 0.0    // 上次吐出任何 final 的牆鐘（安全網合成兜底據此判「太久沒 final」）
+    private var synthCount = 0             // 合成 final 筆數（診斷）
+    private var sawSpeechSinceEmit = false // 自上次吐 final 後是否偵測到語音（RMS≥門檻）
+                                           // ——安全網合成只在「有語音」時才觸發，避免對靜音期殘留 volatile 反覆合成垃圾
+    // 真 final 去重容差：VAD 端點合成後隨即 periodicFinalize(through:游標)，其真 final 的 audio_end
+    // 可能比合成當下游標略大（期間又餵入少許音訊）。給 0.6s 容差把「同一段的真 final」視為重複丟棄，
+    // 同時遠小於 VAD 靜音門檻（≥600ms）＋下一句長度，不會誤丟真正的新段。
+    private let dedupTolSec = 0.6
+
     /// 週期 flush：對目前音訊游標 finalize(through:)，讓 analyzer 吐出累積結果。
     /// 不中止串流（後續音訊照常轉寫）。有新音訊才做，避免對同一位置重複 finalize。
     private func periodicFinalize() async {
@@ -704,6 +748,80 @@ final class STTRunner: @unchecked Sendable {
         finalizeLock.unlock()
     }
 
+    /// 取當前音訊游標對應秒數（合成時作為「涵蓋到此」的去重水位）。
+    private func currentCursorSec() -> Double {
+        cursorLock.lock(); let c = audioSampleCursor; cursorLock.unlock()
+        return analyzerFormat != nil ? Double(c) / analyzerFormat.sampleRate : 0
+    }
+
+    /// 記錄最近一筆 volatile（供合成 final 使用）。在 consumeResults 的 volatile 分支呼叫。
+    private func noteVolatile(text: String, start: Double, end: Double) {
+        synthLock.lock()
+        curVolatileText = text
+        curVolatileStart = start
+        curVolatileEnd = end
+        synthLock.unlock()
+    }
+
+    /// 標記本塊音訊是否為語音（RMS≥門檻）。供安全網合成兜底判斷「該段自上次 final 後有語音」，
+    /// 避免對靜音期的殘留/雜訊 volatile 反覆合成。門檻與 SilenceVAD.rmsFloor 對齊（0.012）。
+    private func markSpeech(rms: Float) {
+        if rms >= 0.012 {
+            synthLock.lock(); sawSpeechSinceEmit = true; synthLock.unlock()
+        }
+    }
+
+    /// 真 isFinal 到達時的去重判定＋水位更新。回傳 true＝應丟棄（該段已由合成送出）。
+    /// 規則（協調者指定）：audio_end ≤ 已吐水位（含容差）→ 丟棄；否則視為新段，照常吐並更新水位。
+    private func shouldDropRealFinal(audioEnd: Double, nowWall: Double) -> Bool {
+        synthLock.lock(); defer { synthLock.unlock() }
+        if audioEnd <= lastEmittedEnd + dedupTolSec {
+            return true
+        }
+        lastEmittedEnd = audioEnd
+        lastEmittedAtWall = nowWall
+        curVolatileText = ""   // 該段已由真 final 定稿，清 volatile 累積
+        sawSpeechSinceEmit = false
+        return false
+    }
+
+    /// 從「最近一筆 volatile」合成一筆 final（放棄依賴 SDK 的 final 交付）。
+    /// - reason：觸發來源（"vad" 靜音端點 ／ "safety" 安全網逾時），僅供診斷。
+    /// - coverThroughSec：本段「涵蓋到」的 audio 秒（去重水位取此值與 volatile end 的較大者）。
+    ///   通常傳當下游標：確保隨後 finalize(through:游標) 若真吐 final，會因 audio_end≤水位而被去重。
+    /// 回傳是否確實合成（僅在「有 volatile 內容且該段尚未吐過 final」時）。
+    @discardableResult
+    private func synthesizeFinal(reason: String, coverThroughSec: Double) -> Bool {
+        guard opts.synthFinal else { return false }
+        synthLock.lock()
+        let text = curVolatileText
+        let start = curVolatileStart
+        let end = curVolatileEnd
+        // 空內容、或該段已吐過 final（end 未超過水位）→ 不合成
+        if text.isEmpty || end <= lastEmittedEnd + 1e-6 {
+            synthLock.unlock()
+            return false
+        }
+        let now = MonoClock.nowMs()
+        let watermark = max(end, coverThroughSec)
+        lastEmittedEnd = watermark
+        lastEmittedAtWall = now
+        synthCount += 1
+        let sc = synthCount
+        curVolatileText = ""   // 清累積，避免同段重複合成
+        sawSpeechSinceEmit = false
+        synthLock.unlock()
+
+        let lv = lastVolatileWallMs.map { now - $0 }
+        let ae = latencySinceAudioEnd(audioEndSec: end, nowMs: now)
+        emitter.final(text: text, tWall: now, audioStart: start, audioEnd: end,
+                      latencySinceLastVolatile: lv, latencySinceAudioEnd: ae, synthesized: true)
+        lastVolatileWallMs = nil
+        emitter.status(String(format: "合成 final #%d（%@）：audio %.2f–%.2fs（去重水位=%.2fs）「%@」",
+                              sc, reason, start, end, watermark, text))
+        return true
+    }
+
     /// 週期 finalize「安全網」（取代原本的固定間隔 metronome）。
     ///
     /// 設計轉變的根因：原本每 flushMs 無條件 finalize(through:)，在「連續語音、無自然靜音」
@@ -725,9 +843,16 @@ final class STTRunner: @unchecked Sendable {
         }
         emitter.status("週期 finalize 安全網啟用：距上次 finalize 達 \(Int(flushMs))ms 且有新音訊才補刀（VAD 為主）。")
         // 起始基準設為現在，讓「開場第一句」有機會先由 VAD 在其自然停頓定稿，而非被安全網提前切斷
+        let startNow = MonoClock.nowMs()
         finalizeLock.lock()
-        lastFinalizeAtWall = MonoClock.nowMs()
+        lastFinalizeAtWall = startNow
         finalizeLock.unlock()
+        synthLock.lock()
+        lastEmittedAtWall = startNow
+        synthLock.unlock()
+        // 合成兜底的額外寬限：安全網 finalize 後，先給真 final 一段時間到達（file-feed 有真 final），
+        // 逾此才合成 → live（無真 final）定期合成、file-feed 則因真 final 刷新水位而不誤觸。
+        let synthGraceMs = 500.0
         // 以較短輪詢間隔檢查「距上次 finalize 是否已超過 flushMs」（不再是固定間隔硬切）
         let pollNs: UInt64 = 200_000_000
         while !Task.isCancelled && !stopRequested {
@@ -739,6 +864,18 @@ final class STTRunner: @unchecked Sendable {
             finalizeLock.unlock()
             if since >= flushMs {
                 await periodicFinalize()
+            }
+            // 合成兜底（連續語音如壓胸數數無 VAD 斷點時的保底）：距上次吐出「任何 final」已超過
+            // flushMs+寬限、且仍有未定稿 volatile → 以最近 volatile 合成，確保「有 volatile 就終究有 final」。
+            synthLock.lock()
+            let vEnd = curVolatileEnd
+            let emittedEnd = lastEmittedEnd
+            let emittedWall = lastEmittedAtWall
+            let hasText = !curVolatileText.isEmpty
+            let hadSpeech = sawSpeechSinceEmit
+            synthLock.unlock()
+            if hadSpeech && hasText && vEnd > emittedEnd + 1e-6 && (now - emittedWall) >= (flushMs + synthGraceMs) {
+                synthesizeFinal(reason: "safety", coverThroughSec: currentCursorSec())
             }
         }
     }
@@ -827,12 +964,16 @@ final class STTRunner: @unchecked Sendable {
         rmsSampleCount += 1
         if rms > rmsPeakThisPeriod { rmsPeakThisPeriod = rms }
         diagLock.unlock()
+        markSpeech(rms: rms) // 標記本段是否有語音（供安全網合成兜底判斷）
 
         // VAD 靜音端點：用已算好的 rms（不重算）。偵測到端點走序列化 finalize 路徑。
         if let vad = vad {
             let shouldEndpoint = vad.feed(rms: rms, nowMs: now)
             if shouldEndpoint {
                 emitter.endpoint(reason: "vad_silence", tWall: now)
+                // 「volatile 合成 final」：靜音端點＝一個語義段結束，直接以最近 volatile 合成 final。
+                // （live SDK 的 isFinal 不交付，這是拿到 final 的主力路徑；隨後的真 final 會被去重。）
+                synthesizeFinal(reason: "vad", coverThroughSec: currentCursorSec())
                 Task { [weak self] in
                     guard let self else { return }
                     await self.periodicFinalize()
@@ -1105,11 +1246,14 @@ final class STTRunner: @unchecked Sendable {
             guard let inBuf = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: chunkFrames) else { break }
             try file.read(into: inBuf)
             if inBuf.frameLength == 0 { break }
-            // VAD 靜音端點（與 live handleTap 相同邏輯）：來源塊 RMS 跨靜音門檻即 finalize
+            // 語音偵測（供安全網合成兜底）＋ VAD 靜音端點（與 live handleTap 相同邏輯）
+            let rms = SilenceVAD.rms(of: inBuf)
+            markSpeech(rms: rms)
             if let vad = vad {
-                let rms = SilenceVAD.rms(of: inBuf)
                 if vad.feed(rms: rms, nowMs: MonoClock.nowMs()) {
                     emitter.endpoint(reason: "vad_silence", tWall: MonoClock.nowMs())
+                    // 與 live 相同：靜音端點以最近 volatile 合成 final（真 final 隨後去重）
+                    synthesizeFinal(reason: "vad", coverThroughSec: currentCursorSec())
                     Task { [weak self] in await self?.periodicFinalize() }
                 }
             }
@@ -1150,7 +1294,8 @@ final class STTRunner: @unchecked Sendable {
         try await analyzer.finalizeAndFinishThroughEndOfInput()
         try? await Task.sleep(nanoseconds: 1_500_000_000)
         resultsTask.cancel()
-        emitter.status("--wav-realtime 完成。")
+        synthLock.lock(); let sc = synthCount; synthLock.unlock()
+        emitter.status("--wav-realtime 完成（合成 final \(sc) 筆）。")
     }
 
     private func advanceCursor(by frames: AVAudioFramePosition) {
@@ -1215,18 +1360,31 @@ final class STTRunner: @unchecked Sendable {
                 }
 
                 if result.isFinal {
-                    // volatile→final 延遲：距同段最後一次 volatile 的時間差
-                    let lv: Double? = lastVolatileWallMs.map { now - $0 }
-                    // audioEnd→final 延遲：final 產出牆鐘時間 − 該段音訊結束對應的牆鐘時間。
-                    // 音訊結束的牆鐘時間 = 啟動後累積播放到 audioEnd 秒的時刻，近似以
-                    // now − (最新音訊游標秒 − audioEnd) 估算。此處以「結果 finalize 時間」為準較穩：
-                    let ae: Double? = latencySinceAudioEnd(audioEndSec: audioEndVal, nowMs: now)
-                    emitter.final(text: text, tWall: now,
-                                  audioStart: audioStart, audioEnd: audioEndVal,
-                                  latencySinceLastVolatile: lv, latencySinceAudioEnd: ae)
-                    lastVolatileWallMs = nil
+                    // 除錯：模擬 live「isFinal 不交付」——直接丟棄真 final，只留合成路徑（驗證用）
+                    if opts.dropRealFinals {
+                        emitter.status(String(format: "[--drop-real-finals] 丟棄真 final（模擬 live）：audio %.2f–%.2fs「%@」", audioStart, audioEndVal, text))
+                        continue
+                    }
+                    // 真 isFinal 到達：先去重——若該段已由合成 final 送出（audio_end≤水位）則丟棄，
+                    // 避免「合成＋真」重複同一句（file-feed 下真 final 正常交付時的關鍵防重）。
+                    if shouldDropRealFinal(audioEnd: audioEndVal, nowWall: now) {
+                        emitter.status(String(format: "真 final 去重丟棄（audio_end %.2f ≤ 已吐水位）：「%@」", audioEndVal, text))
+                    } else {
+                        // volatile→final 延遲：距同段最後一次 volatile 的時間差
+                        let lv: Double? = lastVolatileWallMs.map { now - $0 }
+                        // audioEnd→final 延遲：final 產出牆鐘時間 − 該段音訊結束對應的牆鐘時間。
+                        // 音訊結束的牆鐘時間 = 啟動後累積播放到 audioEnd 秒的時刻，近似以
+                        // now − (最新音訊游標秒 − audioEnd) 估算。此處以「結果 finalize 時間」為準較穩：
+                        let ae: Double? = latencySinceAudioEnd(audioEndSec: audioEndVal, nowMs: now)
+                        emitter.final(text: text, tWall: now,
+                                      audioStart: audioStart, audioEnd: audioEndVal,
+                                      latencySinceLastVolatile: lv, latencySinceAudioEnd: ae)
+                        lastVolatileWallMs = nil
+                    }
                 } else {
                     lastVolatileWallMs = now
+                    // 記錄最近 volatile，供 VAD 端點／安全網逾時合成 final 使用
+                    noteVolatile(text: text, start: audioStart, end: audioEndVal)
                     emitter.volatile(text: text, tWall: now,
                                      audioStart: audioStart, audioEnd: audioEndVal)
                 }
