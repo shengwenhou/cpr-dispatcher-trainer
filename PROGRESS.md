@@ -146,3 +146,7 @@
 ### 2026-07-08 補記二 — STT live 堵塞根因與修法（第二、三輪實測循環）
 
 實測「講很多只辨識一筆、延遲 26 秒」確診為兩問題（詳 commit）：(1) 週期 finalize metronome 硬切致碎片化＋丟內容——改 VAD 為主＋2s 安全網（`CPR_STT_FLUSH_MS` 預設 2000，數數偵測最壞延遲＝此值，S6 若需更快可調小）；(2) live 管線 results 消費者餓死（file-feed 不可複現）——高優先級緩解＋「results 交付」診斷儀器，待真麥克風驗收。**排錯方法論沉澱：spike 新增 `--wav-realtime`（實測 dump 音訊以真實速率回放）——live 時序 bug 從此可離線複現迭代，不需佔用維護者麥克風場。**同輪亦修：緊急中止撕斷播放鏈致「說話中」指示與邏輯時鐘永久掛起（_speak 改 finally 保證收尾＋播放 30s 上限）。
+
+### 2026-07-14 補記 — STT live「final 不交付」終判與合成 fallback
+
+三場真麥克風驗收（含乾淨版本組合）確認：live 管線下 SpeechTranscriber volatile 交付順暢但 isFinal 永不生成（file-feed 正常）——SDK 行為，app 端不可修。終解：helper 於 VAD 端點＋安全網逾時以最近 volatile 合成 final（synthesized:true，音訊座標水位去重），離線 --drop-real-finals 驗證全合成可用。**操作紀律（實測必守）**：每次實測前關舊 Terminal 重開 start.command（防新舊混雜）；DJI 藍牙有約 4 秒喚醒暖機，開場前先對麥出聲。待維護者最終驗收全流程 S0→S7。
