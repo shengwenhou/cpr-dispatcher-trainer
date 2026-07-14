@@ -187,14 +187,20 @@ class SessionRunner:
                 ))
 
     # ── half-duplex gate（裁決 4）───────────────────────────
-    def _classify_gate(self, text: str) -> tuple[bool, Optional[str]]:
+    def _classify_gate(self, text: str, speech_interval: Optional[tuple] = None) -> tuple[bool, Optional[str]]:
         """決定一筆 STT final 是否放行。回傳 (accept, drop_reason)。
 
-        - 發聲窗內、非 S6：硬 gate，一律丟棄（系統說話時嚴格輪流，echo 風險 > 價值）。
-        - 發聲窗內、S6：軟 gate，只認 counting／end_signal（fastpath），其餘丟棄（濾插播 echo；
-          學員數數 pattern 與插播文字天然分離，數數不丟）。
-        - 發聲窗外：放行；但與剛播出台詞高度相似者判為殘響 echo 丟棄（雙保險）。
+        - 座標重疊（語音發生時段 vs 播放時段）**無條件最優先丟棄**：echo 的鐵證。
+          合成 final 於 VAD 端點才產生、到達時必然已在發聲窗外，唯有語音發生時段攔得住
+          （實測教訓：開場白 echo 被當學員發言推進 FSM）。S6 也不例外——示範數數／
+          「往下壓」插播的 echo 內容與學員數數無法靠文字區分，只有時段能判；學員與播放
+          同時出聲的數數段被誤濾無妨（數數連續，下一段座標乾淨即補上，時間戳誠實）。
+        - 到達時刻在發聲窗內（無座標時的保守層）：S6 只認 counting／end_signal，其餘丟；
+          非 S6 硬 gate 丟棄。
+        - 其餘：與剛播出台詞高度相似者判殘響 echo 丟棄（雙保險）。
         """
+        if speech_interval is not None and self._overlaps_playback(speech_interval):
+            return False, "echo_overlap"
         if self._is_speaking():
             if self.engine.state == State.S6:
                 fp = self._fastpath.classify(text, State.S6)
@@ -205,6 +211,19 @@ class SessionRunner:
         if self._echo_similar(text):
             return False, "echo_similarity"
         return True, None
+
+    def _overlaps_playback(self, interval: tuple) -> bool:
+        """判斷語音發生的牆鐘區間是否與任何近期播放時段重疊逾半（echo 座標判定）。
+
+        重疊比例以「該句語音長度」為分母：echo 的語音時段幾乎完全落在播放時段內；
+        學員在播放結束後才講的話重疊為零。門檻 0.5 容納座標推算誤差。"""
+        s, e = interval
+        dur = max(e - s, 1e-6)
+        for ps, pe in getattr(self, "_play_intervals", ()):  # Text 模式無播放區間 → 永不重疊
+            ov = min(e, pe) - max(s, ps)
+            if ov > 0 and (ov / dur) >= 0.5:
+                return True
+        return False
 
     def _echo_similar(self, text: str) -> bool:
         ref = self._last_spoken_text
@@ -244,11 +263,15 @@ class SessionRunner:
         return await loop.run_in_executor(None, self.pipeline.classify, text, state)
 
     # ── 主輸入處理（共用）────────────────────────────────────
-    async def submit_final(self, text: str) -> None:
-        """消化一筆 final 文字（語音模式由 STT 協程呼叫；文字模式由 WS student_final 呼叫）。"""
+    async def submit_final(self, text: str, speech_interval: Optional[tuple] = None) -> None:
+        """消化一筆 final 文字（語音模式由 STT 協程呼叫；文字模式由 WS student_final 呼叫）。
+
+        speech_interval：該句語音「實際發生」的牆鐘區間（語音模式由 STT 座標推算）。
+        gate 需要它對照播放時段——合成 final 到達時刻天生晚於播放（VAD 端點才合成），
+        「到達時刻在不在發聲窗」的判定攔不住 echo，必須用語音發生時段判（實測教訓）。"""
         if self._stopped or self.engine.finished or not text:
             return
-        accept, reason = self._classify_gate(text)
+        accept, reason = self._classify_gate(text, speech_interval)
         if not accept:
             self._record_gate_drop(text, reason)
             return
@@ -376,6 +399,10 @@ class VoiceSessionRunner(SessionRunner):
         self.stt = stt
         self.player = player
         self.degraded = False
+        # 近期播放時段（牆鐘區間，含 echo tail）：座標 echo gate 的比對基準。
+        # 保留多句：合成 final 可能延後數秒到達，屆時發聲窗早已換了好幾句。
+        from collections import deque
+        self._play_intervals: deque = deque(maxlen=8)
 
     async def _run_actions(self, actions: list[SpeakAction]) -> None:
         for a in actions:
@@ -392,6 +419,7 @@ class VoiceSessionRunner(SessionRunner):
         若不走 finally，「說話中」指示與凍結的邏輯時鐘會永遠掛著（實測踩過的坑）。
         echo tail 屬於發聲窗（殘響期間 gate 仍須生效），故 tail 在 finally 解凍之前等。"""
         text = _action_text(action, self.script)
+        play_start_wall = self._now()
         self._freeze_begin()
         self._emit_tts(action, "start", text)
         try:
@@ -409,6 +437,8 @@ class VoiceSessionRunner(SessionRunner):
             self._emit_tts(action, "end", text)
             if text:
                 self._last_spoken_text = text
+            # 記錄本句播放的牆鐘時段（含 tail 殘響餘裕）——座標 echo gate 的比對基準
+            self._play_intervals.append((play_start_wall, self._now() + self.echo_tail_ms / 1000.0))
             self._freeze_end()
 
     async def _tail_wait(self) -> None:
@@ -432,23 +462,33 @@ class VoiceSessionRunner(SessionRunner):
                         session_id=self.session_id,
                     ))
                 elif ev.type == STTEventType.FINAL and ev.text:
-                    # 逐字稿先落地＋推 WS（講師看見 STT 聽到什麼），再走 gate/引擎（可能被 gate 丟棄）。
-                    # audio_start/audio_end 為該段語音在音訊軸上的座標——與 tts_play 起訖比對
-                    # 即可鐵證判定「這筆是不是喇叭 echo」與辨識延遲（final 牆鐘 − audio_end）。
+                    # 由 STT 座標推算「這句話實際發生」的牆鐘時段：座標 echo gate 的輸入。
+                    # helper 的 latency 欄位＝final 產出時刻 − 該段音訊結束時刻（合成 final 也有估算）。
+                    recv_wall = self._now()
+                    lat_s = (ev.latency_since_audio_end_ms or 0) / 1000.0
+                    dur = max(0.0, (ev.audio_end or 0.0) - (ev.audio_start or 0.0))
+                    end_wall = recv_wall - lat_s
+                    speech_iv = (end_wall - dur, end_wall)
+                    # gate 預判（僅供逐字稿標記；正式判定與 drop 記錄在 submit_final 內）
+                    accept, reason = self._classify_gate(ev.text, speech_iv)
                     self.metrics.record(
                         RunnerEventType.STT_FINAL, text=ev.text,
                         audio_start=ev.audio_start, audio_end=ev.audio_end,
                         latency_ms=ev.latency_since_audio_end_ms,
+                        dropped=None if accept else reason,
                     )
                     self._drain_metrics()
+                    # 逐字稿照推（講師看見 STT 聽到什麼），但被 gate 濾除者帶標記——
+                    # 否則 echo 會以「學員」泡泡出現，講師誤以為系統把自己的話當學員（實測回報）。
                     self._emit(wsp.make(
                         wsp.MsgType.TRANSCRIPT,
                         payload={"kind": "final", "text": ev.text,
                                  "audio_start": ev.audio_start, "audio_end": ev.audio_end,
-                                 "latency_ms": ev.latency_since_audio_end_ms},
+                                 "latency_ms": ev.latency_since_audio_end_ms,
+                                 "dropped": None if accept else reason},
                         session_id=self.session_id,
                     ))
-                    await self.submit_final(ev.text)
+                    await self.submit_final(ev.text, speech_iv)
                 elif ev.type == STTEventType.STATUS:
                     # helper 的 stderr 診斷落地事件流（ready／asset／audio 啟動等），
                     # 不推前端；實測「STT 零事件」的排查全靠這個。

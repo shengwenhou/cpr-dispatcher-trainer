@@ -406,6 +406,15 @@ input:focus {
   border-color: var(--warn);
 }
 
+/* 被 echo gate 濾除的定稿：半透明＋刪除線，講師可見系統濾掉了什麼但不與學員發言混淆 */
+.bubble.filtered {
+  opacity: 0.38;
+  border-style: dotted;
+}
+.bubble.filtered div {
+  text-decoration: line-through;
+}
+
 .speaking-indicator {
   position: absolute;
   left: 24px;

@@ -58,6 +58,7 @@
     "send_button": "送出",
     "dispatcher_label": "派遣員",
     "student_label": "學員",
+    "filtered_label": "已過濾（回音）",
     "fallback_layer": "Fallback L{layer}",
     "partial_label": "即時逐字稿"
   },

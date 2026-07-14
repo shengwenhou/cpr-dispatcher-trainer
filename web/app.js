@@ -326,7 +326,12 @@
       renderPartialTranscript(text);
     } else {
       commitPartialTranscript();
-      addBubble("student", text, { label: t("practice.student_label") });
+      if (payload.dropped) {
+        // 被 echo gate 濾除的定稿：以過濾樣式顯示（非學員泡泡），講師可見系統濾掉了什麼
+        addBubble("student", text, { label: t("practice.filtered_label"), filtered: true });
+      } else {
+        addBubble("student", text, { label: t("practice.student_label") });
+      }
     }
   }
 
@@ -559,6 +564,9 @@
     }
     if (options.fallback) {
       bubble.classList.add("fallback");
+    }
+    if (options.filtered) {
+      bubble.classList.add("filtered");
     }
     const label = document.createElement("small");
     label.textContent = options.label || "";

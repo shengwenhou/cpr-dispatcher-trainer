@@ -258,3 +258,31 @@ def test_dwell_relative_with_large_absolute_clock():
     assert 0.0 < s["ohca_recognized_s"] < 10.0
     assert 0.0 < s["compression_start_s"] < 10.0
     assert 0.0 < s["ems_arrived_s"] < 10.0
+
+
+# ── 座標式 echo gate（合成 final 延後到達的 echo 防禦）────────────────
+def test_voice_gate_echo_overlap_by_interval():
+    """語音發生時段與播放時段重疊 → 無條件丟棄（含 S6 數數 pattern 的 echo）。"""
+    runner, engine, _, _ = _voice_runner()
+    # 模擬剛播完一句（牆鐘 100.0–106.5，含 tail）
+    runner._play_intervals.append((100.0, 106.5))
+
+    # 完全落在播放時段內的「開場白 echo」→ 丟（即使已離開發聲窗）
+    engine.state = State.S1
+    ac, rc = runner._classify_gate("請問你要消防車還是救護車", (101.0, 105.0))
+    assert ac is False and rc == "echo_overlap"
+
+    # S6：示範數數的 echo（內容像數數）也一樣被座標 gate 丟——時間戳不被 echo 污染
+    engine.state = State.S6
+    ac2, rc2 = runner._classify_gate("一下兩下三下", (101.0, 104.0))
+    assert ac2 is False and rc2 == "echo_overlap"
+
+    # 播放結束後才發生的真學員發言（零重疊）→ 放行
+    engine.state = State.S1
+    assert runner._classify_gate("我要救護車", (107.0, 108.5))[0] is True
+
+    # 重疊不到一半（學員在播放尾端開口、大半在播放後）→ 放行
+    assert runner._classify_gate("我要救護車", (106.0, 110.0))[0] is True
+
+    # 文字模式（無座標）不受座標 gate 影響
+    assert runner._classify_gate("我要救護車", None)[0] is True
