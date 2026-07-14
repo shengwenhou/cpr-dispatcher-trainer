@@ -150,3 +150,7 @@
 ### 2026-07-14 補記 — STT live「final 不交付」終判與合成 fallback
 
 三場真麥克風驗收（含乾淨版本組合）確認：live 管線下 SpeechTranscriber volatile 交付順暢但 isFinal 永不生成（file-feed 正常）——SDK 行為，app 端不可修。終解：helper 於 VAD 端點＋安全網逾時以最近 volatile 合成 final（synthesized:true，音訊座標水位去重），離線 --drop-real-finals 驗證全合成可用。**操作紀律（實測必守）**：每次實測前關舊 Terminal 重開 start.command（防新舊混雜）；DJI 藍牙有約 4 秒喚醒暖機，開場前先對麥出聲。待維護者最終驗收全流程 S0→S7。
+
+### 2026-07-14 補記二 — STT 沉默之謎全案偵破 ✅
+
+最終根因＝**helper 事件流 stdout 接 pipe 全緩衝**（EventEmitter 用 print()；TTY 行緩衝故 spike 人工實測從未暴露；被 server 以 pipe 接管即 4–8KB 全緩衝——每場「講話沒反應＋26 秒孤兒 final」全是緩衝假象）。改 FileHandle 直寫 stdout 修畢。**排查中一併修掉的真問題**：週期 finalize metronome 碎片化（改 VAD 為主＋2s 安全網）、SDK live 模式 isFinal 永不交付（volatile 合成 final＋座標水位去重，合成現為 live 主力產出）、results 消費者優先級。完整重現驗收（實際 server＋喇叭回放實測錄音）：partial 即時、合成 final 即時、FSM S0→S3 推進。**方法論沉澱**：層層假說（finalize 卡死→音質→QoS→空文字）以儀器逐一否決，最後靠「stderr 通、stdout 不通」的不對稱鎖定真兇；教訓——**子進程 stdout 給 pipe 接管時必須顯式 unbuffered**，且診斷與資料同管道才不會被緩衝差異誤導。待維護者最終全流程 S0→S7 驗收（helper 為每場 spawn，無需重啟 server）。
