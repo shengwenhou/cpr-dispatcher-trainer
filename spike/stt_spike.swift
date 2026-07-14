@@ -960,8 +960,41 @@ final class STTRunner: @unchecked Sendable {
     }
 
     /// tap callback：計算 VAD、轉換格式、推進音訊游標、丟入 analyzer 串流。
-    private func handleTap(buffer: AVAudioPCMBuffer, hwFormat: AVAudioFormat) {
+    /// 多聲道 buffer 只抽主通道（ch0），不做混疊 downmix。
+    ///
+    /// voice processing（AEC）模式的麥克風是多通道（實測 16kHz/7ch）：ch0 為處理後語音，
+    /// 其餘為波束／參考通道。AVAudioConverter 對多→單聲道預設「平均混疊」——語音被六路
+    /// 非語音通道稀釋，RMS 看似有訊號、辨識器卻整場沉默（實測教訓）。僅支援 deinterleaved
+    /// 常見格式；其他佈局回傳原 buffer 交 converter 處理（有損但不中斷）。
+    private func extractPrimaryChannel(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer {
+        let fmt = buffer.format
+        guard fmt.channelCount > 1, !fmt.isInterleaved,
+              let monoFmt = AVAudioFormat(commonFormat: fmt.commonFormat, sampleRate: fmt.sampleRate,
+                                          channels: 1, interleaved: false),
+              let out = AVAudioPCMBuffer(pcmFormat: monoFmt, frameCapacity: buffer.frameLength)
+        else { return buffer }
+        out.frameLength = buffer.frameLength
+        let n = Int(buffer.frameLength)
+        if fmt.commonFormat == .pcmFormatFloat32, let src = buffer.floatChannelData, let dst = out.floatChannelData {
+            memcpy(dst[0], src[0], n * MemoryLayout<Float>.size)
+        } else if fmt.commonFormat == .pcmFormatInt16, let src = buffer.int16ChannelData, let dst = out.int16ChannelData {
+            memcpy(dst[0], src[0], n * MemoryLayout<Int16>.size)
+        } else {
+            return buffer
+        }
+        if !primaryChannelNoted {
+            primaryChannelNoted = true
+            emitter.status("多聲道輸入（\(fmt.channelCount)ch，voice processing）：僅抽主通道 ch0 餵辨識（不混疊）。")
+        }
+        return out
+    }
+
+    private var primaryChannelNoted = false
+
+    private func handleTap(buffer rawBuffer: AVAudioPCMBuffer, hwFormat: AVAudioFormat) {
         let now = MonoClock.nowMs()
+        // 多聲道（AEC 模式）先抽主通道——RMS/VAD/converter 一律以 ch0 為準
+        let buffer = extractPrimaryChannel(rawBuffer)
 
         // ★ 藍牙 route/codec 變化偵測（本次推理的核心可疑點）：
         // tap 是以「安裝當下的 hwFormat」宣告的，但實際傳入的 buffer 帶自己的 format。
