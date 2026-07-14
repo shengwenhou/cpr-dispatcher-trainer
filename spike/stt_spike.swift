@@ -214,7 +214,12 @@ final class EventEmitter {
         guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
               let s = String(data: data, encoding: .utf8) else { return }
         ioLock.lock(); defer { ioLock.unlock() }
-        print(s)
+        // ★ 事件流一律以 unbuffered syscall 直寫 stdout，絕不用 print()：
+        // print 走 C stdout 緩衝——接 TTY 時行緩衝（人工測試一切正常），接 pipe 時「全緩衝」
+        // （塞滿 4–8KB 才 flush）。被 server subprocess 接管時，volatile/final 事件會積在
+        // 緩衝內遲遲不到（實測：對話全程無反應、偶爾湧出一筆 26 秒前的孤兒 final），
+        // 而 status 走 stderr unbuffered 一切即時——正是這不對稱掩蓋了根因。
+        FileHandle.standardOutput.write((s + "\n").data(using: .utf8)!)
     }
 
     func status(_ msg: String) {
@@ -1383,6 +1388,15 @@ final class STTRunner: @unchecked Sendable {
                     }
                 } else {
                     lastVolatileWallMs = now
+                    // 診斷「volatile 空文字」：前 3 筆與其後每 25 筆記錄內容長度與 audio 座標
+                    //（實測某些環境 result 到達但 text 為空 → 合成無料，這是關鍵可觀察點）
+                    diagLock.lock()
+                    let vSeq = resultsReceivedCount
+                    diagLock.unlock()
+                    if vSeq <= 3 || vSeq % 25 == 0 {
+                        emitter.status(String(format: "volatile #%d：len=%d audio %.2f–%.2fs 「%@」",
+                                              vSeq, text.count, audioStart, audioEndVal, String(text.prefix(20))))
+                    }
                     // 記錄最近 volatile，供 VAD 端點／安全網逾時合成 final 使用
                     noteVolatile(text: text, start: audioStart, end: audioEndVal)
                     emitter.volatile(text: text, tWall: now,
