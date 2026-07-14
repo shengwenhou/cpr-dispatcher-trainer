@@ -48,6 +48,8 @@ struct Options {
     var silenceMs: Double = 800
     var useVAD: Bool = true
     var pretty: Bool = false
+    var aec: Bool = true         // 系統級回音消除（voice processing）：喇叭輸出從麥克風訊號中消除，
+                                 // echo 從源頭消失、學員搶話（barge-in）也能乾淨辨識。--no-aec 可關。
     var wavPath: String? = nil   // --wav / --wav-realtime：從 WAV 檔餵同一條 analyzer 管線（繞過麥克風）
     var flushMs: Double = 2000   // 週期 finalize「安全網」間隔毫秒（見 runFlushSafetyNet）：
                                  // 距上次 finalize 達此值且有新音訊才補刀。VAD 靜音斷句為主，
@@ -121,6 +123,8 @@ struct Options {
             case "--flush-ms":
                 i += 1
                 if i < a.count, let v = Double(a[i]) { o.flushMs = v }
+            case "--no-aec":
+                o.aec = false
             case "--dump-audio":
                 i += 1
                 if i < a.count { o.dumpAudioPath = a[i] }
@@ -575,6 +579,17 @@ final class STTRunner: @unchecked Sendable {
 
         // 設定麥克風 tap
         let inputNode = engine.inputNode
+        // ★ 系統級回音消除（AEC）：voice processing 模式把系統輸出（afplay 播的派遣員語音）
+        // 從麥克風訊號中消除——echo 從源頭消失，學員在台詞播放中搶話也能乾淨辨識。
+        // 必須在 engine 啟動前設定；失敗（裝置不支援等）不致命，退回 gate 防禦並記診斷。
+        if opts.aec {
+            do {
+                try inputNode.setVoiceProcessingEnabled(true)
+                emitter.status("已啟用系統級回音消除（voice processing：AEC＋降噪）")
+            } catch {
+                emitter.status("⚠ 回音消除啟用失敗（退回 gate 防禦）：\(error.localizedDescription)")
+            }
+        }
         let hwFormat = inputNode.outputFormat(forBus: 0)
         emitter.status("麥克風硬體格式：\(hwFormat.sampleRate)Hz, \(hwFormat.channelCount)ch, commonFormat=\(hwFormat.commonFormat.rawValue)")
 
